@@ -308,6 +308,26 @@ def cmd_prompt(a, lp: Loop) -> int:
     return 0
 
 
+def cmd_run(a, lp: Loop) -> int:
+    from . import run as R
+    lp.load()
+    if a.service:
+        print(R.service_text(lp.root, a.every_hours))
+        return 0
+    if a.detach:
+        pid = R.detach(lp.root, lp.config().get("priority") or "background")
+        print(f"loop run started in the background (pid {pid}); progress in .improvement-loop/RUN.md, "
+              f"stop with `touch .improvement-loop/STOP`")
+        return 0
+    err = R.acquire_lock(lp)
+    if err:
+        raise LoopError(err)
+    try:
+        return R.Runner(lp).run(a.max_steps)
+    finally:
+        R.release_lock(lp)
+
+
 def cmd_lenses(a, lp: Loop) -> int:
     if a.scores:
         rows = L.scores(lp.dir)
@@ -414,6 +434,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--denylist")
     p.add_argument("--yes", action="store_true", help="really file (default: dry run)")
     p.set_defaults(fn=cmd_issues)
+    p = sp.add_parser("run", help="drive the cycle unattended with the configured agent (see `autonomy`)")
+    p.add_argument("--detach", action="store_true", help="run in the background at low priority")
+    p.add_argument("--service", action="store_true", help="print a launchd/systemd/schtasks definition")
+    p.add_argument("--every-hours", type=float, default=1.0)
+    p.add_argument("--max-steps", type=int, default=200)
+    p.set_defaults(fn=cmd_run)
     p = sp.add_parser("lenses", help="which lenses run this cycle and why; --scores for per-lens precision")
     p.add_argument("--scores", action="store_true")
     p.set_defaults(fn=cmd_lenses)

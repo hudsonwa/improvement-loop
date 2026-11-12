@@ -26,5 +26,8 @@ Python 3.9+, standard library only. Agent skills: copy `skills/claude-code/SKILL
 3. Read `RANKED.md`, approve with `loop approve ranking --by YOU`, and keep going: `loop status` always says what
    is missing before the next `loop advance`.
 
+Unattended: set `agent` and `autonomy` in `.improvement-loop/config.json`, then `loop run --detach` (background
+priority, efficiency cores; see PROCESS.md, Autonomy).
+
 Before any push: `loop privacy --denylist ~/private-terms.txt --history origin/main..HEAD` (keep the denylist
 outside the repo). The full process is in [docs/PROCESS.md](docs/PROCESS.md). MIT licence.

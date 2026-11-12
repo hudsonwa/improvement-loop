@@ -42,6 +42,32 @@ without a shell; each failure becomes a finding in `findings/checks.json` whose 
 coverage, audits and benchmarks reach the ranking without an opinion. **Scores**: `loop lenses --scores` writes
 `LENS-SCORES.md` (per lens: raised, accepted, false, fixed, precision). Retire lenses that keep missing.
 
+## Autonomy (`loop run`)
+`loop run` drives the cycle with any agent CLI: `"agent": {"cmd": ["claude", "-p", "--permission-mode",
+"bypassPermissions"], "timeout": 3600}` (the prompt goes on stdin, or where `{prompt_file}` appears), with
+per-role overrides in `agents` (e.g. a different vendor for `external-reviewer`). Critics run in throwaway
+worktrees, blind to each other; builders commit one plan item at a time on the loop's branch.
+
+| `autonomy` | Approved by policy | Parks for the owner at |
+|---|---|---|
+| `off` (default) | nothing | ranking, plan, release, next/stop |
+| `build` | ranking (findings >= `policy.min_severity`), plan (top `policy.top_n`) | release |
+| `full` | also release, next and stop (stop rule binding) | only failures |
+
+Guardrails, always on: builds only on a `branch_prefix` branch (`git worktree add ../proj-loop -b loop/auto`, run
+the loop there; your checkout is never touched); `test_cmd` after every item, failed items rolled back and
+deferred; `protected` globs (the referee: gates, policy, CI) may not change; a failed gate rolls the cycle back to
+its base with a backup tag; budget, `max_cycles` and the stop rule end the run; `touch .improvement-loop/STOP`
+stops it between steps; one driver per project. Nothing is ever pushed, filed or published. Policy approvals are
+logged as `policy:autonomy-<level>`; progress in `.improvement-loop/RUN.md`, alerts via `notify`.
+
+**Background by default** (`priority`: `background` | `low` | `normal`): macOS marks the driver and every child
+Darwin-background (`taskpolicy -b`: efficiency cores, throttled I/O); Linux uses nice 19, `SCHED_IDLE`, idle I/O
+and, on hybrid Intel CPUs, the efficiency cores; Windows uses idle priority plus EcoQoS. `loop run --detach`
+starts it in the background; `loop run --service` prints a launchd / systemd / Task Scheduler definition that
+resumes it every hour. **Applying the loop to itself**: run the installed release, not the checkout, and protect
+`improvement_loop/state.py`, `privacy.py`, `metrics.py`, `run.py` and `.github/**`.
+
 ## Steps and the commands that guard them
 
 | Step | Who | Leaves when (checked by `loop advance`) |

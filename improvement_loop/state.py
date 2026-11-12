@@ -34,6 +34,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "lenses": None,                  # None = core + detected lenses (see lenses.py); or an explicit list
     "retired": [],                   # lenses never to run (e.g. after `loop lenses --scores`)
     "checks": [],                    # project commands whose failure becomes a finding (`loop check`)
+    # `loop run` (see run.py)
+    "agent": None,                   # {"cmd": ["claude", "-p", ...], "timeout": 3600}; "{prompt_file}" or stdin
+    "agents": {},                    # per-role overrides of `agent`, e.g. a different vendor for a critic
+    "autonomy": "off",               # off | build | full
+    "policy": {"top_n": 5, "min_severity": 3},
+    "priority": "background",        # background (efficiency cores) | low | normal
+    "max_parallel": 3,
+    "test_cmd": None,                # run after every built item and at the gate, e.g. ["python", "-m", "pytest"]
+    "protected": [],                 # globs the driver must never change (the referee)
+    "branch_prefix": "loop/",
+    "notify": None,                  # e.g. ["say", "{message}"]
     "metrics": None,                 # None = metrics.DEFAULT_METRICS
     "denylist": None,                # path to a denylist file OUTSIDE the repo; or $IMPROVEMENT_LOOP_DENYLIST
 }

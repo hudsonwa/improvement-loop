@@ -408,5 +408,121 @@ class TestLenses(Repo):
         self.assertIn("| performance |", out)
 
 
+FAKE_AGENT = r"""
+import json, os, subprocess, sys
+pf = sys.argv[1]
+role = os.path.basename(pf).replace(".prompt.md", "")
+text = open(pf).read()
+loop = [sys.executable, "-m", "improvement_loop"]
+root = os.environ["FAKE_ROOT"]
+cyc = json.load(open(os.path.join(root, ".improvement-loop/state.json")))["cycle"]
+cdir = os.path.join(root, ".improvement-loop", "cycle-%d" % cyc)
+if role == "architecture-critic":
+    rel = text.split("Change no file except ")[1].split(".json")[0] + ".json"
+    os.makedirs(os.path.dirname(rel), exist_ok=True)
+    json.dump({"findings": [{"id": "A-1", "role": role, "claim": "the cache dict literal is unclear",
+               "category": "correctness", "evidence": [{"file": "app.py", "line": 2, "quote": "cache = {}"}],
+               "severity": 4, "reach": 3, "effort": 1, "removes_complexity": False}]}, open(rel, "w"))
+elif role == "verifier":
+    subprocess.run(loop + ["--root", root, "set-verdict", "A-1", "true", "--by", "verifier-agent"], check=True)
+elif role == "planner":
+    it = {"id": "P-1", "title": "Clearer cache", "finding_ids": ["A-1"], "why": "w", "scope_in": "app.py",
+          "scope_out": "-", "removes": "the literal", "must_not_add": "lines", "acceptance": ["a"],
+          "metric": "product_loc", "tests": "t", "depends_on": [], "labels": ["correctness"],
+          "estimate_hours": 1, "wave": 1}
+    json.dump({"items": [it]}, open(os.path.join(cdir, "plan.json"), "w"))
+elif role.startswith("build-"):
+    target = os.environ.get("FAKE_EDIT", "app.py")
+    src = open(os.path.join(root, "app.py")).read().replace("cache = {}", "cache = dict()")
+    open(os.path.join(root, target), "w").write(src if target == "app.py" else "changed\n")
+    g = ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(g + ["add", "-A"], check=True)
+    subprocess.run(g + ["commit", "-qm", "P-1: Clearer cache"], check=True)
+elif role == "auditor":
+    open(os.path.join(cdir, "AUDIT.md"), "w").write("# Audit\nok\n")
+"""
+
+
+class TestRun(Repo):
+    def setUp(self):
+        super().setUp()
+        import sys
+        git(self.root, "init", "-q")
+        self.write("gate.py", "x = 1\n")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "add", "-A")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base")
+        git(self.root, "checkout", "-qb", "loop/auto")
+        agent = os.path.join(tempfile.mkdtemp(), "fake_agent.py")
+        with open(agent, "w") as fh:
+            fh.write(FAKE_AGENT)
+        self.lp = Loop(self.root)
+        cfg = dict(lenses=["architecture-critic"], max_cycles=1, autonomy="full", protected=["gate.py"],
+                   test_cmd=[sys.executable, "-c", "pass"], agent={"cmd": [sys.executable, agent, "{prompt_file}"]},
+                   worktrees_dir=os.path.join(tempfile.mkdtemp(), "wt"))
+        self.lp.init()
+        _write(self.lp.config_path, dict(self.lp.config(), **cfg))
+        st = self.lp.load()
+        self.lp._select_lenses(st)
+        self.lp._save(st)
+        os.environ["FAKE_ROOT"] = self.root
+
+    def tearDown(self):
+        os.environ.pop("FAKE_ROOT", None)
+        os.environ.pop("FAKE_EDIT", None)
+        super().tearDown()
+
+    def run_loop(self):
+        from improvement_loop import run as R
+        with contextlib.redirect_stdout(io.StringIO()):
+            return R.Runner(self.lp).run()
+
+    def test_full_autonomy_one_cycle(self):
+        self.assertEqual(self.run_loop(), 0)
+        st = self.lp.load()
+        self.assertEqual(st["step"], "done")
+        self.assertTrue(all(a["by"] == "policy:autonomy-full" for a in st["approvals"]))
+        log = subprocess.run(["git", "-C", self.root, "log", "--format=%s"], capture_output=True, text=True).stdout
+        self.assertIn("P-1: Clearer cache", log)
+        self.assertEqual(D.parse(self.lp.decisions_path)[-1]["status"], "fixed")
+        self.assertNotIn("improvement-loop", subprocess.run(["git", "-C", self.root, "status", "--porcelain"],
+                                                            capture_output=True, text=True).stdout)
+
+    def test_off_parks_at_ranking(self):
+        cfg = self.lp.config()
+        cfg["autonomy"] = "off"
+        _write(self.lp.config_path, cfg)
+        self.assertEqual(self.run_loop(), 3)
+        self.assertEqual(self.lp.load()["step"], "rank")
+        with open(os.path.join(self.lp.dir, "RUN.md")) as fh:
+            self.assertIn("ranking ready for the owner", fh.read())
+
+    def test_protected_path_rolled_back(self):
+        os.environ["FAKE_EDIT"] = "gate.py"
+        self.assertEqual(self.run_loop(), 0)        # item rolled back; the empty cycle still completes
+        with open(os.path.join(self.root, "gate.py")) as fh:
+            self.assertEqual(fh.read(), "x = 1\n")
+        self.assertEqual(D.parse(self.lp.decisions_path)[-1]["status"], "deferred")
+
+    def test_stop_file_and_wrong_branch(self):
+        _text(os.path.join(self.lp.dir, "STOP"), "")
+        self.assertEqual(self.run_loop(), 3)
+        os.remove(os.path.join(self.lp.dir, "STOP"))
+        git(self.root, "checkout", "-qb", "main-ish")
+        cfg = self.lp.config()
+        cfg["autonomy"] = "build"
+        _write(self.lp.config_path, cfg)
+        self.assertEqual(self.run_loop(), 3)
+        self.assertEqual(self.lp.load()["step"], "build")
+
+    def test_priority_helpers(self):
+        from improvement_loop import priority as PR
+        self.assertEqual(PR._cpu_list("0-2,5"), {0, 1, 2, 5})
+        self.assertEqual(PR.wrap(["x"], "normal"), ["x"])
+        import sys
+        p = PR.run([sys.executable, "-c", "print(1)"], "background", capture_output=True, timeout=30)
+        self.assertEqual(p.stdout.strip(), b"1")
+        self.assertRaises(ValueError, PR.lower_self, "turbo")
+
+
 if __name__ == "__main__":
     unittest.main()
