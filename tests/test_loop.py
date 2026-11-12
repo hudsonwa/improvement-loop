@@ -1,0 +1,340 @@
+import contextlib
+import io
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+
+from improvement_loop import cli
+from improvement_loop import decisions as D
+from improvement_loop import findings as F
+from improvement_loop import issues as I
+from improvement_loop import metrics as M
+from improvement_loop import privacy as P
+from improvement_loop.state import Loop, LoopError
+
+
+def finding(id="A-1", role="architecture-critic", claim="the cache is never invalidated", category="correctness",
+            file="app.py", line=2, quote="cache = {}", sev=3, reach=3, effort=2, rc=False, **kw):
+    f = {"id": id, "role": role, "claim": claim, "category": category,
+         "evidence": [{"file": file, "line": line, "quote": quote}],
+         "severity": sev, "reach": reach, "effort": effort, "removes_complexity": rc}
+    f.update(kw)
+    return f
+
+
+def git(repo, *args):
+    subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True)
+
+
+class Repo(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.write("app.py", "import os\ncache = {}\n\ndef run():\n    return cache\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, rel, text):
+        p = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as fh:
+            fh.write(text)
+        return p
+
+    def run_cli(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["--root", self.root, *args])
+        return code, out.getvalue() + err.getvalue()
+
+
+class TestSchema(unittest.TestCase):
+    def test_valid(self):
+        self.assertEqual(F.validate(finding()), [])
+
+    def test_errors(self):
+        bad = finding(sev=9, category="vibes")
+        bad["evidence"] = [{"file": "x", "line": 0, "quote": ""}]
+        bad["extra"] = 1
+        errs = " ".join(F.validate(bad))
+        for s in ("unknown field 'extra'",):
+            self.assertIn(s, errs)
+        bad.pop("extra")
+        errs = " ".join(F.validate(bad))
+        for s in ("category", "severity", "line must be", "quote must be"):
+            self.assertIn(s, errs)
+
+    def test_bool_is_not_int(self):
+        self.assertTrue(F.validate(finding(sev=True)))
+
+    def test_duplicate_ids(self):
+        self.assertTrue(any("duplicate" in e for e in F.validate_all([finding(), finding()])))
+
+
+class TestFingerprintRank(unittest.TestCase):
+    def test_fingerprint_ignores_word_order_and_case(self):
+        a = finding(claim="The cache is never invalidated")
+        b = finding(claim="never invalidated: the CACHE", id="B-1", role="first-time-user")
+        self.assertEqual(F.fingerprint(a), F.fingerprint(b))
+        merged = F.dedupe([a, b])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["role"], "architecture-critic+first-time-user")
+
+    def test_dotfile_path_kept(self):
+        a = finding(file=".github/x.yml")
+        b = finding(file="github/x.yml")
+        self.assertNotEqual(F.fingerprint(a), F.fingerprint(b))
+
+    def test_rank_order(self):
+        ok = dict(verdict="true", evidence_ok=True)
+        fs = [finding(id="low", claim="a b c minor", category="simplicity", sev=3, reach=5, **ok),     # 15
+              finding(id="urgent", claim="data loss", category="security", sev=4, reach=1, **ok),       # 4 urgent
+              finding(id="tie-rc", claim="tie one", category="user_value", sev=3, reach=5, rc=True, **ok),
+              finding(id="tie-cheap", claim="tie two", category="user_value", sev=3, reach=5, effort=1, **ok),
+              finding(id="false", claim="nope", verdict="false", evidence_ok=True),
+              finding(id="noev", claim="no evidence", verdict="true", evidence_ok=False)]
+        ranked, excluded = F.rank(fs)
+        self.assertEqual([f["id"] for f in ranked], ["urgent", "tie-rc", "tie-cheap", "low"])
+        self.assertEqual({f["id"] for f in excluded}, {"false", "noev"})
+
+    def test_closed_fingerprints_excluded(self):
+        f = finding(verdict="true", evidence_ok=True)
+        ranked, excluded = F.rank([f], {F.fingerprint(f)})
+        self.assertEqual(ranked, [])
+        self.assertIn("DECISIONS", excluded[0]["excluded_because"])
+
+
+class TestEvidence(Repo):
+    def test_ok_and_window(self):
+        self.assertEqual(F.check_evidence(self.root, {"file": "app.py", "line": 2, "quote": "cache = {}"})[0], True)
+        self.assertTrue(F.check_evidence(self.root, {"file": "app.py", "line": 4, "quote": "cache  =  {}"})[0])
+
+    def test_failures(self):
+        for e, why in [({"file": "app.py", "line": 99, "quote": "x"}, "line 99"),
+                       ({"file": "nope.py", "line": 1, "quote": "x"}, "not found"),
+                       ({"file": "../etc/passwd", "line": 1, "quote": "root"}, "escapes"),
+                       ({"file": "app.py", "line": 1, "quote": "def walk"}, "quote not found")]:
+            ok, msg = F.check_evidence(self.root, e)
+            self.assertFalse(ok)
+            self.assertIn(why, msg)
+
+
+class TestDecisions(Repo):
+    def test_record_closed_regress(self):
+        dp, fx = os.path.join(self.root, "DECISIONS.md"), os.path.join(self.root, "fixed.json")
+        f, g = finding(), finding(id="B", claim="other thing entirely", line=1, quote="import os")
+        D.record(dp, f, "fixed", "integrator", "abc123", fx)
+        D.record(dp, g, "deferred", "owner", "later | maybe")
+        self.assertEqual(D.closed(dp), {F.fingerprint(f), F.fingerprint(g)})
+        self.assertEqual(D.regressions(self.root, fx)[0]["status"], "suspect")  # quote still there
+        self.write("app.py", "import os\nstore = {}\n")
+        self.assertEqual(D.regressions(self.root, fx)[0]["status"], "holds")
+        with self.assertRaises(ValueError):
+            D.record(dp, f, "rejected", "", "x")
+
+    def test_note_does_not_reopen(self):
+        dp = os.path.join(self.root, "DECISIONS.md")
+        f = finding()
+        D.record(dp, f, "rejected", "owner", "no")
+        D.record(dp, f, "note", "owner", "tie-break")
+        self.assertIn(F.fingerprint(f), D.closed(dp))
+
+
+class TestStateMachine(Repo):
+    def test_full_cycle_guards_and_approvals(self):
+        lp = Loop(self.root)
+        lp.init("lite")
+        self.assertRaises(LoopError, lp.init)
+        self.assertRaises(LoopError, lp.advance)               # no findings yet
+        fdir = lp.path("findings")
+        F.save(os.path.join(fdir, "architecture-critic.json"), [finding()])
+        F.save(os.path.join(fdir, "first-time-user.json"),
+               [finding(id="U-1", role="first-time-user", claim="readme lies about install", category="user_value",
+                        line=1, quote="import os")])
+        self.assertEqual(lp.advance()["step"], "verify")
+        self.assertIn("missing verified.json", " ".join(lp.guards()))
+        code, out = self.run_cli("verify")
+        self.assertEqual(code, 0, out)
+        self.assertIn("still unverified", " ".join(lp.guards()))
+        code, out = self.run_cli("set-verdict", "A-1", "true", "--by", "architecture-critic")
+        self.assertEqual(code, 2)                               # author may not verify
+        self.assertIn("must not be the finding's author", out)
+        for i in ("A-1", "U-1"):
+            self.assertEqual(self.run_cli("set-verdict", i, "true", "--by", "verifier")[0], 0)
+        lp.advance()
+        self.assertEqual(self.run_cli("rank")[0], 0)
+        self.assertIn("approval 'ranking'", " ".join(lp.guards()))
+        self.assertRaises(LoopError, lp.approve, "plan", "owner")    # wrong gate for this step
+        self.assertRaises(LoopError, lp.approve, "ranking", " ")
+        code, out = self.run_cli("approve", "ranking", "--by", "owner")  # not a tty, no --yes
+        self.assertEqual(code, 2)
+        self.assertEqual(self.run_cli("approve", "ranking", "--by", "owner", "--yes")[0], 0)
+        self.assertEqual(lp.advance()["step"], "plan")
+        with open(lp.path("plan.json"), "w") as fh:
+            json.dump({"items": [plan_item()]}, fh)
+        lp.approve("plan", "owner")
+        lp.advance()
+        self.assertEqual(self.run_cli("issues", "draft")[0], 0)
+        lp.advance()
+        self.assertRaises(LoopError, lp.advance)               # BUILD.md missing
+        _text(lp.path("BUILD.md"), "P-1 | lane | abc | tests pass | A-1\n")
+        lp.advance()
+        _write(lp.path("gate.json"), {"pass": True})
+        _write(lp.path("privacy.json"), {"pass": False})
+        lp.approve("release", "owner")
+        self.assertIn("privacy scan (`loop privacy`) did not pass", " ".join(lp.guards()))
+        _write(lp.path("privacy.json"), {"pass": True})
+        lp.advance()
+        _text(lp.path("AUDIT.md"), "ok\n")
+        self.assertIn("approval 'next'", " ".join(lp.guards()))
+        lp.approve("next", "owner")
+        st = lp.advance()
+        self.assertEqual((st["cycle"], st["step"]), (2, "critique"))
+        self.assertTrue(os.path.isdir(lp.path("findings")))
+
+    def test_stop_and_budget(self):
+        lp = Loop(self.root)
+        lp.init()
+        cfg = lp.config()
+        cfg.update(max_cycles=5, budget={"minutes": 10, "cost": 0, "max_lanes": 2})
+        _write(lp.config_path, cfg)
+        self.assertEqual(lp.stop_reasons(), [])
+        lp.spend(minutes=12)
+        self.assertTrue(any("budget" in r for r in lp.stop_reasons()))
+        self.assertRaises(LoopError, lp.spend, -1)
+        F.save(lp.path("verified.json"), [finding(sev=2, verdict="true", evidence_ok=True)])
+        self.assertTrue(any("severity >= 3" in r for r in lp.stop_reasons()))
+
+    def test_stop_approval_ends_loop(self):
+        lp = Loop(self.root)
+        lp.init()
+        st = lp.load()
+        st["step"] = "audit"
+        _write(lp.state_path, st)
+        self.assertRaises(LoopError, lp.approve, "release", "owner")
+        _text(lp.path("AUDIT.md"), "x")
+        lp.approve("stop", "owner")
+        self.assertEqual(lp.advance()["step"], "done")
+        self.assertRaises(LoopError, lp.advance)
+
+
+def plan_item(**kw):
+    it = {"id": "P-1", "title": "Invalidate the cache", "finding_ids": ["A-1"], "why": "stale data",
+          "scope_in": "app.py", "scope_out": "storage", "removes": "manual reset", "must_not_add": "a new thread",
+          "acceptance": ["cache cleared on write"], "metric": "product_loc", "tests": "test_cache",
+          "depends_on": [], "labels": ["correctness"], "estimate_hours": 2, "wave": 1}
+    it.update(kw)
+    return it
+
+
+def _text(p, s):
+    with open(p, "w") as fh:
+        fh.write(s)
+
+
+def _write(p, obj):
+    with open(p, "w") as fh:
+        json.dump(obj, fh)
+
+
+class TestIssues(Repo):
+    def test_validate(self):
+        self.assertEqual(I.validate_plan({"items": [plan_item()]}), [])
+        errs = " ".join(I.validate_plan({"items": [plan_item(estimate_hours=9, finding_ids=[], removes="",
+                                                             depends_on=["X"])]}))
+        for s in ("not atomic", "names no finding", "simplicity check", "unknown item X"):
+            self.assertIn(s, errs)
+        self.assertTrue(I.validate_plan({}))
+
+    def test_draft_and_dry_run(self):
+        paths = I.draft({"items": [plan_item()]}, os.path.join(self.root, "issues"))
+        with open(paths[0]) as fh:
+            text = fh.read()
+        self.assertIn("**Simplicity check:** removes: manual reset", text)
+        out = I.file_issues(paths, "o/r", {paths[0]: ["bug"]})
+        self.assertTrue(out[0].startswith("DRY RUN: gh issue create --repo o/r"))
+
+
+class TestPrivacy(Repo):
+    def test_generic_patterns(self):
+        fake_key = "ghp_" + "a" * 36
+        text = "\n".join([f"token = {fake_key}", "mail me at someone@corp-internal.com",  # privacy:allow (fixture)
+                          "ok: noreply@example.com", "host 10.1.2.3", "loopback 127.0.0.1 and version 1.2.3.999",  # privacy:allow
+                          "path /Users/alice/x", "fine /Users/<you>/x", f"{fake_key}  privacy:allow"])
+        kinds = [h["kind"] for h in P.scan_text("t", text, [])]
+        self.assertEqual(kinds, ["secret:github-token", "email", "ip-address", "home-path"])
+        self.assertNotIn("a" * 20, json.dumps(P.scan_text("t", text, [])))  # secrets are redacted
+
+    def test_denylist_never_echoed(self):
+        dl = self.write("outside/deny.txt", "# comment\nProjectNightjar\nre:acme-\\d+\n")
+        deny = P.load_denylist(dl)
+        hits = P.scan_text("t", "uses projectnightjar and ACME-42", deny)
+        self.assertEqual(len(hits), 2)
+        self.assertNotIn("nightjar", json.dumps(hits).lower())
+
+    def test_repo_scan_and_cli(self):
+        git(self.root, "init", "-q")
+        self.write("notes.txt", "contact boss@private-co.com\n")  # privacy:allow (fixture)
+        self.write("ignored.log", "boss@private-co.com\n")  # privacy:allow (fixture)
+        self.write(".gitignore", "*.log\n")
+        files = {h["file"] for h in P.scan_repo(self.root, [])}
+        self.assertEqual(files, {"notes.txt"})
+        code, out = self.run_cli("privacy")
+        self.assertEqual(code, 1)
+        self.assertIn("PRIVACY: FAIL", out)
+
+
+class TestMetrics(Repo):
+    def test_glob(self):
+        self.assertTrue(M.match("a.py", ["**/*.py"]))
+        self.assertTrue(M.match("x/y/a.py", ["**/*.py"]))
+        self.assertTrue(M.match("tests/a.py", ["tests/**"]))
+        self.assertFalse(M.match("a.js", ["**/*.py"]))
+
+    def test_gate_between_refs(self):
+        git(self.root, "init", "-q")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "add", "-A")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base")
+        self.write("app.py", "import os, threading\ncache = {}\nthreading.Thread(target=print).start()\n\n\n")
+        self.write("tests/test_app.py", "x = 1\n" * 50)  # tests are not product code
+        base = M.collect(M.Source(self.root, "HEAD"), M.DEFAULT_METRICS)
+        head = M.collect(M.Source(self.root, M.WORKTREE), M.DEFAULT_METRICS)
+        self.assertEqual((base["product_loc"], head["product_loc"]), (4, 3))
+        self.assertEqual((base["background_actors"], head["background_actors"]), (0, 1))
+        rows, fails = M.gate(M.DEFAULT_METRICS, base, head, {})
+        self.assertEqual(fails, ["background_actors"])
+        rows, fails = M.gate(M.DEFAULT_METRICS, base, head, M.read_justifications("- background_actors: needed\n"))
+        self.assertEqual(fails, [])
+        self.assertIn("worse, justified", M.markdown(rows, "a", "b"))
+        code, out = self.run_cli("gate", "--base", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("GATE: FAIL (background_actors)", out)
+
+    def test_metric_validation(self):
+        self.assertTrue(M.validate_metric({"key": "x", "kind": "regex", "include": ["*"], "pattern": "("}))
+        self.assertEqual(M.validate_metric(M.DEFAULT_METRICS[0]), [])
+
+
+class TestCli(Repo):
+    def test_prompts_and_validate(self):
+        code, out = self.run_cli("prompt", "--list")
+        self.assertEqual(code, 0)
+        for role in ("external-reviewer", "architecture-critic", "state-machine-critic", "first-time-user",
+                     "verifier", "planner", "integrator", "auditor"):
+            self.assertIn(role, out)
+        p = self.write("f.json", json.dumps({"findings": [finding()]}))
+        self.assertEqual(self.run_cli("validate", p)[0], 0)
+        self.write("g.json", "[{}]")
+        self.assertEqual(self.run_cli("validate", os.path.join(self.root, "g.json"))[0], 1)
+
+    def test_status_uninitialised(self):
+        code, out = self.run_cli("status")
+        self.assertEqual(code, 2)
+        self.assertIn("loop init", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
