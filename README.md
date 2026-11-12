@@ -30,4 +30,6 @@ Unattended: set `agent` and `autonomy` in `.improvement-loop/config.json`, then 
 priority, efficiency cores; see PROCESS.md, Autonomy).
 
 Before any push: `loop privacy --denylist ~/private-terms.txt --history origin/main..HEAD` (keep the denylist
-outside the repo). The full process is in [docs/PROCESS.md](docs/PROCESS.md). MIT licence.
+outside the repo). The full process is in [docs/PROCESS.md](docs/PROCESS.md); to check that a run really
+improved a project (measured before/after, blind judge, regressions fed back into the loop) see
+[docs/EVALUATION.md](docs/EVALUATION.md). MIT licence.

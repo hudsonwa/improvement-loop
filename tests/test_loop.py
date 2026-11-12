@@ -359,7 +359,7 @@ class TestCli(Repo):
         self.assertEqual(code, 0)
         for role in ("external-reviewer", "architecture-critic", "state-machine-critic", "first-time-user",
                      "verifier", "planner", "integrator", "auditor", "performance", "reliability",
-                     "test-quality", "docs-drift", "dependencies", "accessibility"):
+                     "test-quality", "docs-drift", "dependencies", "accessibility", "eval-judge"):
             self.assertIn(role, out)
         p = self.write("f.json", json.dumps({"findings": [finding()]}))
         self.assertEqual(self.run_cli("validate", p)[0], 0)
