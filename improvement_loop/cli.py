@@ -27,10 +27,6 @@ def _write_json(path: str, obj) -> None:
         fh.write("\n")
 
 
-def _cycle_path(lp: Loop, name: str) -> Optional[str]:
-    return lp.path(name) if lp.exists else None
-
-
 # ------------------------------------------------------------------ commands
 
 
@@ -229,6 +225,7 @@ def cmd_gate(a, lp: Loop) -> int:
         with open(a.justify, encoding="utf-8") as fh:
             just = M.read_justifications(fh.read())
     rows, fails = M.gate(ms, base, head, just)
+    fails += ["regression: " + r["id"] for r in D.regressions(lp.root, lp.fixed_path) if r["status"] == "suspect"]
     md = M.markdown(rows, a.base, a.head)
     print(md + f"\nGATE: {'FAIL (' + ', '.join(fails) + ')' if fails else 'PASS'}")
     if lp.exists:

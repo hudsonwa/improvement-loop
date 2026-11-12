@@ -78,7 +78,7 @@ resumes it every hour. **Applying the loop to itself**: run the installed releas
 | plan | planner | valid `plan.json` (atomic items, simplicity check) and owner approved `plan` |
 | issues | `loop issues draft` / `file` | issues drafted (filing is a dry run unless `--yes`) |
 | build | lanes + integrator | `BUILD.md` merge log |
-| gate | `loop gate`, `loop privacy`, `loop regress` | both pass and the owner approved `release` |
+| gate | `loop gate` (complexity metrics + regression check of fixed findings), `loop privacy` | `gate.json` and `privacy.json` both record pass and the owner approved `release`; `loop advance` reads these recorded verdicts and does not re-run them |
 | audit | auditor | `AUDIT.md` and owner approved `next` (new cycle) or `stop` (done) |
 
 ### Critique (step 0)

@@ -316,6 +316,27 @@ class TestMetrics(Repo):
         self.assertEqual(code, 1)
         self.assertIn("GATE: FAIL (background_actors)", out)
 
+    def test_REL_10_gate_records_regression(self):
+        git(self.root, "init", "-q")
+        self.run_cli("init")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "add", "-A")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base")
+        lp = Loop(self.root)
+        D.record(lp.decisions_path, finding(), "fixed", "integrator", "abc123", lp.fixed_path)
+        code, out = self.run_cli("gate", "--base", "HEAD")
+        self.assertEqual(code, 1, out)
+        self.assertIn("GATE: FAIL (regression: A-1)", out)
+        with open(lp.path("gate.json")) as fh:
+            verdict = json.load(fh)
+        self.assertEqual((verdict["pass"], verdict["fails"]), (False, ["regression: A-1"]))
+        self.assertEqual(self.run_cli("regress")[0], 1)
+        self.write("app.py", "import os\nstore = {}\n\ndef run():\n    return store\n")
+        code, out = self.run_cli("gate", "--base", "HEAD")
+        self.assertEqual(code, 0, out)
+        with open(lp.path("gate.json")) as fh:
+            self.assertTrue(json.load(fh)["pass"])
+        self.assertEqual(self.run_cli("regress")[0], 0)
+
     def test_metric_validation(self):
         self.assertTrue(M.validate_metric({"key": "x", "kind": "regex", "include": ["*"], "pattern": "("}))
         self.assertEqual(M.validate_metric(M.DEFAULT_METRICS[0]), [])
