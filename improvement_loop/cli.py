@@ -49,7 +49,7 @@ def cmd_status(a, lp: Loop) -> int:
             "budget_used": st["budget_used"], "budget": lp.config()["budget"],
             "approvals_this_cycle": [x for x in st["approvals"] if x["cycle"] == st["cycle"]],
             "can_advance": not unmet, "unmet": unmet, "critics": lp.critics(),
-            "cycle_dir": os.path.relpath(lp.cycle_dir(st), lp.root)}
+            "cycle_dir": _rel(lp.cycle_dir(st), lp.root)}
     if st["step"] == "audit":
         info["stop_reasons"] = lp.stop_reasons(st)
     _out(info)
@@ -127,7 +127,7 @@ def cmd_verify(a, lp: Loop) -> int:
         seen.add(f["id"])
     F.save(vp, out)
     bad = sum(1 for f in out if not f["evidence_ok"])
-    print(f"{len(allf)} findings -> {len(out)} after dedupe; evidence failed for {bad}; wrote {os.path.relpath(vp)}")
+    print(f"{len(allf)} findings -> {len(out)} after dedupe; evidence failed for {bad}; wrote {_rel(vp)}")
     print("next: the verifier sets each verdict (`loop set-verdict ID true|partly|false|not_checkable --by ROLE`)")
     return 0
 
@@ -176,7 +176,7 @@ def cmd_rank(a, lp: Loop) -> int:
         fh.write(md)
     F.save(lp.path("ranked.json"), ranked)
     print(md)
-    print(f"wrote {os.path.relpath(lp.path('RANKED.md'))}; the owner approves with `loop approve ranking --by NAME`")
+    print(f"wrote {_rel(lp.path('RANKED.md'))}; the owner approves with `loop approve ranking --by NAME`")
     return 0
 
 
@@ -186,7 +186,7 @@ def cmd_decide(a, lp: Loop) -> int:
     if not hit:
         raise LoopError(f"no finding {a.id} in this cycle's verified.json")
     fp = D.record(lp.decisions_path, hit[0], a.status, a.by, a.reason, lp.fixed_path)
-    print(f"recorded {a.status} for {a.id} ({fp}) in {os.path.relpath(lp.decisions_path)}")
+    print(f"recorded {a.status} for {a.id} ({fp}) in {_rel(lp.decisions_path)}")
     return 0
 
 
@@ -245,8 +245,8 @@ def cmd_privacy(a, lp: Loop) -> int:
     deny = P.load_denylist(deny_path)
     skip = set()
     if deny_path:
-        rel = os.path.relpath(os.path.abspath(deny_path), lp.root)
-        if not rel.startswith(".."):
+        rel = _rel(os.path.abspath(deny_path), lp.root)
+        if not rel.startswith("..") and not os.path.isabs(rel):
             print(f"WARNING: the denylist {rel} is inside the repo; keep it outside (it names private things)")
             skip.add(rel)
     if a.text:
@@ -275,7 +275,7 @@ def cmd_issues(a, lp: Loop) -> int:
     out_dir = lp.path("issues")
     if a.action == "draft":
         for p in I.draft(plan, out_dir):
-            print(os.path.relpath(p))
+            print(_rel(p))
         return 0
     paths = I.draft(plan, out_dir)
     deny = P.load_denylist(a.denylist or os.environ.get("IMPROVEMENT_LOOP_DENYLIST") or lp.config().get("denylist"))
@@ -387,6 +387,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (LoopError, ValueError, OSError, RuntimeError, json.JSONDecodeError) as e:
         print(f"loop: {e}", file=sys.stderr)
         return 2
+
+
+
+def _rel(path: str, start: str = os.curdir) -> str:
+    """os.path.relpath that does not raise across Windows drives (falls back to the absolute path)."""
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:
+        return os.path.abspath(path)
 
 
 if __name__ == "__main__":
