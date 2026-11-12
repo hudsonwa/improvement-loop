@@ -359,6 +359,8 @@ class Runner:
                        self.root)
         if not os.path.exists(self.lp.path("AUDIT.md")):
             raise Parked("auditor wrote no AUDIT.md")
+        if self.lp.approved(st, "next") or self.lp.approved(st, "stop"):
+            return
         if self.autonomy != "full":
             raise Parked("audit done; the owner approves `next` or `stop`")
         reasons = self.lp.stop_reasons(st)

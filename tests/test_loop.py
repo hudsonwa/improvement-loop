@@ -535,6 +535,18 @@ class TestRun(Repo):
             self.assertEqual(fh.read(), "x = 1\n")
         self.assertEqual(D.parse(self.lp.decisions_path)[-1]["status"], "deferred")
 
+    def test_build_autonomy_resumes_after_owner_next(self):
+        cfg = self.lp.config()
+        cfg.update(autonomy="build", max_cycles=3)
+        _write(self.lp.config_path, cfg)
+        self.assertEqual(self.run_loop(), 3)                    # parks at release
+        self.lp.approve("release", "owner")
+        self.assertEqual(self.run_loop(), 3)                    # parks at audit
+        self.assertEqual(self.lp.load()["step"], "audit")
+        self.lp.approve("next", "owner")
+        self.run_loop()
+        self.assertEqual(self.lp.load()["cycle"], 2)            # resumed past the owner's approval
+
     def test_stop_file_and_wrong_branch(self):
         _text(os.path.join(self.lp.dir, "STOP"), "")
         self.assertEqual(self.run_loop(), 3)
