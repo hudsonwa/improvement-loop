@@ -21,7 +21,7 @@ Python 3.9+, standard library only. Agent skills: copy `skills/claude-code/SKILL
 ## Use it in 3 steps
 
 1. `loop init` (or `loop init --mode lite`) in your project.
-2. Have your agent run the critics (`loop prompt --list`) into `.improvement-loop/cycle-1/findings/`, then
+2. Have your agent run each lens (`loop lenses`, then `loop prompt <lens>`) and `loop check` into `.improvement-loop/cycle-1/findings/`, then
    `loop verify`, the verifier's `loop set-verdict ...`, `loop advance`, `loop rank`.
 3. Read `RANKED.md`, approve with `loop approve ranking --by YOU`, and keep going: `loop status` always says what
    is missing before the next `loop advance`.

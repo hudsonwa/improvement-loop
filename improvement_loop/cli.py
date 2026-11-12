@@ -11,11 +11,10 @@ from . import __version__
 from . import decisions as D
 from . import findings as F
 from . import issues as I
+from . import lenses as L
 from . import metrics as M
 from . import privacy as P
 from .state import APPROVALS, Loop, LoopError
-
-PROMPTS = os.path.join(os.path.dirname(__file__), "prompts")
 
 
 def _out(obj) -> None:
@@ -38,7 +37,10 @@ def _cycle_path(lp: Loop, name: str) -> Optional[str]:
 def cmd_init(a, lp: Loop) -> int:
     st = lp.init(a.mode)
     print(f"initialised {lp.dir} (mode {a.mode}); cycle {st['cycle']}, step {st['step']}")
-    print("critics to run: " + ", ".join(lp.critics()) + "  (see `loop prompt --list`)")
+    print("lenses this cycle:")
+    for x in lp.lens_selection():
+        print(f"  {x['lens']:22} {x['why']}")
+    print("each lens is a critic: `loop prompt <lens>`; project checks: `loop check`")
     return 0
 
 
@@ -295,14 +297,56 @@ def cmd_issues(a, lp: Loop) -> int:
 
 
 def cmd_prompt(a, lp: Loop) -> int:
-    names = sorted(n[:-3] for n in os.listdir(PROMPTS) if n.endswith(".md"))
+    names = L.prompt_names(lp.root)
     if a.list or not a.role:
         print("\n".join(names))
         return 0
-    if a.role not in names:
+    text = L.prompt_text(lp.root, a.role)
+    if text is None:
         raise LoopError(f"no prompt '{a.role}'; one of {', '.join(names)}")
-    with open(os.path.join(PROMPTS, a.role + ".md"), encoding="utf-8") as fh:
-        print(fh.read())
+    print(text)
+    return 0
+
+
+def cmd_lenses(a, lp: Loop) -> int:
+    if a.scores:
+        rows = L.scores(lp.dir)
+        md = L.scores_markdown(rows)
+        print(md)
+        if lp.exists:
+            with open(os.path.join(lp.dir, "LENS-SCORES.md"), "w", encoding="utf-8") as fh:
+                fh.write(md)
+        return 0
+    cfg = lp.config()
+    active = {x["lens"]: x["why"] for x in (lp.lens_selection() if lp.exists else
+                                            [{"lens": n, "why": w} for n, w in L.select(lp.root, cfg, 1)])}
+    for name, lens in L.available(lp.root).items():
+        why = active.get(name) or ("retired" if name in (cfg.get("retired") or []) else "not this cycle")
+        print(f"{'*' if name in active else ' '} {name:22} {lens['origin']:9} {why}")
+    for name in active:
+        if name not in L.available(lp.root):
+            print(f"* {name:22} {'config':9} {active[name]}")
+    return 0
+
+
+def cmd_check(a, lp: Loop) -> int:
+    _require_step(lp, "critique")
+    checks = lp.config().get("checks") or []
+    errs = L.validate_checks(checks)
+    if errs:
+        raise LoopError("bad checks config:\n  " + "\n  ".join(errs))
+    if not checks:
+        print("no checks configured: add {\"name\", \"cmd\": [...]} entries to `checks` in config.json")
+        return 0
+    found = L.run_checks(lp.root, checks, lp.cycle_dir())
+    for c in checks:
+        print(f"{'ok  ' if c['_result'] == '0' else 'FAIL'} {c['name']} (exit {c['_result']})")
+    fp = lp.path(os.path.join("findings", "checks.json"))
+    if found:
+        F.save(fp, found)
+        print(f"{len(found)} failing check(s) -> {_rel(fp)}")
+    elif os.path.exists(fp):
+        os.remove(fp)
     return 0
 
 
@@ -370,7 +414,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--denylist")
     p.add_argument("--yes", action="store_true", help="really file (default: dry run)")
     p.set_defaults(fn=cmd_issues)
-    p = sp.add_parser("prompt", help="print a role prompt")
+    p = sp.add_parser("lenses", help="which lenses run this cycle and why; --scores for per-lens precision")
+    p.add_argument("--scores", action="store_true")
+    p.set_defaults(fn=cmd_lenses)
+    sp.add_parser("check", help="run the configured project checks; failures become findings"
+                  ).set_defaults(fn=cmd_check)
+    p = sp.add_parser("prompt", help="print a lens or role prompt")
     p.add_argument("role", nargs="?")
     p.add_argument("--list", action="store_true")
     p.set_defaults(fn=cmd_prompt)

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from . import decisions as D
 from . import findings as F
+from . import lenses as L
 
 STEPS = ("critique", "verify", "rank", "plan", "issues", "build", "gate", "audit")
 TERMINAL = "done"
@@ -23,16 +24,16 @@ TERMINAL = "done"
 APPROVAL_TO_LEAVE = {"rank": "ranking", "plan": "plan", "gate": "release", "audit": "next"}
 APPROVALS = tuple(APPROVAL_TO_LEAVE.values()) + ("stop",)
 
-FULL_CRITICS = ["external-reviewer", "architecture-critic", "state-machine-critic", "first-time-user"]
-LITE_CRITICS = ["architecture-critic", "first-time-user"]
-
 DEFAULT_CONFIG: Dict[str, Any] = {
     "mode": "full",                  # full | lite
     "max_cycles": 3,
     "stop_severity": 3,              # stop when no verified finding at or above this severity remains
     "lite_top_n": 3,
     "budget": {"minutes": 0, "cost": 0.0, "max_lanes": 4},   # 0 = unlimited
-    "critics": None,                 # None = by mode
+    "critics": None,                 # explicit critic list; overrides lens selection
+    "lenses": None,                  # None = core + detected lenses (see lenses.py); or an explicit list
+    "retired": [],                   # lenses never to run (e.g. after `loop lenses --scores`)
+    "checks": [],                    # project commands whose failure becomes a finding (`loop check`)
     "metrics": None,                 # None = metrics.DEFAULT_METRICS
     "denylist": None,                # path to a denylist file OUTSIDE the repo; or $IMPROVEMENT_LOOP_DENYLIST
 }
@@ -70,7 +71,8 @@ class Loop:
         cfg = dict(DEFAULT_CONFIG, mode=mode)
         _write_json(self.config_path, cfg)
         st = {"cycle": 1, "step": STEPS[0], "approvals": [], "budget_used": {"minutes": 0, "cost": 0.0},
-              "history": [{"at": _now(), "event": "init", "cycle": 1, "step": STEPS[0]}]}
+              "history": [{"at": _now(), "event": "init", "cycle": 1, "step": STEPS[0]}], "lenses": {}}
+        self._select_lenses(st)
         self._save(st)
         os.makedirs(os.path.join(self.cycle_dir(st), "findings"), exist_ok=True)
         return st
@@ -139,9 +141,20 @@ class Loop:
             out.append(f"cost {used['cost']}/{b['cost']}")
         return out
 
+    def _select_lenses(self, st: Dict[str, Any]) -> None:
+        """Fix this cycle's lenses once, when the cycle starts, so the critique guard cannot shift."""
+        st.setdefault("lenses", {})[str(st["cycle"])] = [
+            {"lens": n, "why": why} for n, why in L.select(self.root, self.config(), st["cycle"])]
+
+    def lens_selection(self, st: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
+        st = st or self.load()
+        sel = st.get("lenses", {}).get(str(st["cycle"]))
+        if sel is None:  # state written before lenses existed
+            sel = [{"lens": n, "why": w} for n, w in L.select(self.root, self.config(), st["cycle"])]
+        return sel
+
     def critics(self) -> List[str]:
-        cfg = self.config()
-        return cfg["critics"] or (LITE_CRITICS if cfg["mode"] == "lite" else FULL_CRITICS)
+        return [x["lens"] for x in self.lens_selection()]
 
     # -------------------------------------------------------------- guards
 
@@ -234,6 +247,7 @@ class Loop:
             else:
                 st["cycle"] += 1
                 st["step"] = STEPS[0]
+                self._select_lenses(st)
                 os.makedirs(os.path.join(self.cycle_dir(st), "findings"), exist_ok=True)
         else:
             st["step"] = STEPS[i + 1]

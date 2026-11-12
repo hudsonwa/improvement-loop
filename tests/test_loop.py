@@ -10,6 +10,7 @@ from improvement_loop import cli
 from improvement_loop import decisions as D
 from improvement_loop import findings as F
 from improvement_loop import issues as I
+from improvement_loop import lenses as L
 from improvement_loop import metrics as M
 from improvement_loop import privacy as P
 from improvement_loop.state import Loop, LoopError
@@ -325,7 +326,8 @@ class TestCli(Repo):
         code, out = self.run_cli("prompt", "--list")
         self.assertEqual(code, 0)
         for role in ("external-reviewer", "architecture-critic", "state-machine-critic", "first-time-user",
-                     "verifier", "planner", "integrator", "auditor"):
+                     "verifier", "planner", "integrator", "auditor", "performance", "reliability",
+                     "test-quality", "docs-drift", "dependencies", "accessibility"):
             self.assertIn(role, out)
         p = self.write("f.json", json.dumps({"findings": [finding()]}))
         self.assertEqual(self.run_cli("validate", p)[0], 0)
@@ -336,6 +338,74 @@ class TestCli(Repo):
         code, out = self.run_cli("status")
         self.assertEqual(code, 2)
         self.assertIn("loop init", out)
+
+
+class TestLenses(Repo):
+    def test_selection_core_detect_rotation_lite(self):
+        self.write("tests/test_app.py", "x = 1\n")
+        names = lambda cfg, cyc=1: [n for n, _ in L.select(self.root, cfg, cyc)]
+        full = names({"mode": "full"})
+        for n in ("architecture-critic", "external-reviewer", "first-time-user", "state-machine-critic",
+                  "test-quality", "performance", "reliability"):
+            self.assertIn(n, full)
+        self.assertNotIn("accessibility", full)            # no UI files
+        self.assertNotIn("performance", names({"mode": "full"}, 2))   # every 2 cycles
+        self.assertIn("test-quality", names({"mode": "full"}, 2))
+        self.assertEqual(sorted(names({"mode": "lite"})), ["architecture-critic", "first-time-user"])
+        self.assertNotIn("performance", names({"mode": "full", "retired": ["performance"]}))
+        self.assertEqual(names({"critics": ["x"]}), ["x"])
+        self.assertEqual(names({"lenses": ["performance"]}), ["performance"])
+        self.assertRaises(ValueError, L.select, self.root, {"lenses": ["nope"]}, 1)
+
+    def test_project_lens_and_prompt_contract(self):
+        self.write(".improvement-loop/lenses/latency.md", "---\ndetect: **/*.py\n---\n# Lens: latency\n{{contract}}\n")
+        self.assertIn("latency", [n for n, _ in L.select(self.root, {"mode": "full"}, 1)])
+        text = L.prompt_text(self.root, "latency")
+        self.assertIn("Output contract", text)
+        self.assertNotIn("{{contract}}", text)
+        self.assertIsNone(L.prompt_text(self.root, "_contract"))
+        for n in L.prompt_names(self.root):
+            self.assertNotIn("{{contract}}", L.prompt_text(self.root, n))
+
+    def test_selection_frozen_per_cycle_and_guard(self):
+        lp = Loop(self.root)
+        lp.init()
+        before = lp.critics()
+        self.write("ui/index.html", "<button></button>\n")      # appears mid-cycle: no new lens this cycle
+        self.assertEqual(lp.critics(), before)
+        self.assertTrue(any("findings/performance.json" in u for u in lp.guards()))
+
+    def test_checks_become_findings(self):
+        import sys
+        lp = Loop(self.root)
+        lp.init()
+        cfg = lp.config()
+        cfg["checks"] = [{"name": "ok", "cmd": [sys.executable, "-c", "pass"]},
+                         {"name": "bad", "cmd": [sys.executable, "-c", "import sys; sys.exit(3)"],
+                          "category": "security", "severity": 4}]
+        _write(lp.config_path, cfg)
+        code, out = self.run_cli("check")
+        self.assertEqual(code, 0, out)
+        fs = F.load(lp.path("findings/checks.json"))
+        self.assertEqual([f["id"] for f in fs], ["CHECK-bad"])
+        self.assertEqual(F.validate_all(fs), [])
+        self.assertTrue(F.verify_evidence(self.root, fs)[0]["evidence_ok"])
+        self.assertTrue(L.validate_checks([{"name": "x", "cmd": "make test"}]))
+
+    def test_scores(self):
+        lp = Loop(self.root)
+        lp.init()
+        fs = [finding(id=f"A-{i}", claim="claim " + "abcdef"[i] * 3, verdict="true" if i < 4 else "false", evidence_ok=True)
+              for i in range(6)]
+        fs.append(finding(id="B-1", role="performance", claim="slow", verdict="partly", evidence_ok=True, sev=4))
+        F.save(lp.path("verified.json"), fs)
+        D.record(lp.decisions_path, fs[0], "fixed", "integrator", "abc")
+        rows = {r["lens"]: r for r in L.scores(lp.dir)}
+        a = rows["architecture-critic"]
+        self.assertEqual((a["accepted"], a["false"], a["fixed"], a["precision"]), (4, 2, 1, 0.67))
+        self.assertEqual(rows["performance"]["advice"], "too few judged findings")
+        code, out = self.run_cli("lenses", "--scores")
+        self.assertIn("| performance |", out)
 
 
 if __name__ == "__main__":

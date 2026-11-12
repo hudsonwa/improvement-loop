@@ -11,7 +11,7 @@ by hand and **never run `loop approve`: approvals belong to the owner**. When a 
 
 ## Each turn
 1. `loop status` (run `loop init [--mode lite]` first if needed). Do exactly what `unmet` lists.
-2. **critique**: for each critic in `critics`, start an independent subagent (blind to the others) with the text of
+2. **critique**: run `loop check`; then for each lens in `critics` (`loop lenses` says why each runs), start an independent subagent (blind to the others) with the text of
    `loop prompt <role>`; each writes `.improvement-loop/cycle-N/findings/<role>.json`. Use a different model for
    `external-reviewer` when you can, and scrub what you send it with `loop privacy --text FILE`. Then
    `loop validate` each file and `loop advance`.

@@ -15,11 +15,32 @@ heavy, fragile or hard to use.
 ## Budget, modes and stop
 - **Budget** per loop in `.improvement-loop/config.json` (`minutes`, `cost`, `max_lanes`; 0 = unlimited). Record
   use with `loop spend`.
-- **Lite mode**: two critics (architecture + first-time user), verify, fix the top 3, gate, ship.
-- **Full mode**: all critics. The state-machine lens and metrics may run every second cycle if nothing structural
-  changed (set `critics` in the config).
+- **Lite mode**: two lenses (architecture + first-time user), verify, fix the top 3, gate, ship.
+- **Full mode**: the core lenses plus every lens that applies to the project (see Lenses below).
 - **Stop** (`loop stop-check`) when no verified finding of severity >= 3 remains, OR `max_cycles` is reached, OR
   the budget is spent. The owner decides (`loop approve stop`).
+
+## Lenses and checks
+Every critic is a **lens**: one dimension of quality with its own prompt (`loop prompt <lens>`). `loop lenses` shows
+which run this cycle and why. The selection is fixed when a cycle starts.
+
+| Lens | Runs when | Looks for |
+|---|---|---|
+| external-reviewer, architecture-critic, state-machine-critic, first-time-user | always (core) | outside view, over-engineering, reachable bad states, first-run friction |
+| test-quality | test files exist | untested paths, flaky or empty tests |
+| performance, reliability | code exists; every 2nd cycle | wasted work at real scale; unhandled failures, timeouts, partial writes |
+| docs-drift | docs exist; every 2nd cycle | docs vs behaviour, unannounced interface breaks |
+| dependencies | a manifest exists; every 2nd cycle | vulnerable, heavy, unpinned or removable dependencies |
+| accessibility | UI files exist; every 2nd cycle | WCAG 2.2 AA, keyboard, contrast, phone width |
+
+Cycle 1 runs every lens that applies. Config: `lenses` (explicit list), `retired` (never run), `critics` (old
+explicit list; overrides everything). **Project lenses**: drop `<name>.md` in `.improvement-loop/lenses/` with a
+header (`detect: <globs>`, `every: N`, `core: true`) and `{{contract}}` where the output contract goes; it can stay
+private while the loop stays generic. **Checks**: `checks` in config is a list of
+`{"name", "cmd": [...], "lens", "category", "severity", "timeout"}`. `loop check` (critique step) runs them
+without a shell; each failure becomes a finding in `findings/checks.json` whose evidence is the check's log, so
+coverage, audits and benchmarks reach the ranking without an opinion. **Scores**: `loop lenses --scores` writes
+`LENS-SCORES.md` (per lens: raised, accepted, false, fixed, precision). Retire lenses that keep missing.
 
 ## Steps and the commands that guard them
 
@@ -35,8 +56,7 @@ heavy, fragile or hard to use.
 | audit | auditor | `AUDIT.md` and owner approved `next` (new cycle) or `stop` (done) |
 
 ### Critique (step 0)
-External objective review · architecture / over-engineering critic · implicit state machine review · first-time
-user on a fresh machine · metrics. Anything sent to an external reviewer is scrubbed first (`loop privacy --text`).
+Every lens selected for the cycle, blind to the others, plus `loop check`. Anything sent to an external reviewer is scrubbed first (`loop privacy --text`).
 
 ### Verify (step 1)
 Every quote is machine-checked against the cited file:line; the verifier then judges the claim: true / partly /
