@@ -466,6 +466,8 @@ elif role == "planner":
 elif role.startswith("build-"):
     target = os.environ.get("FAKE_EDIT", "app.py")
     src = open(os.path.join(root, "app.py")).read().replace("cache = {}", "cache = dict()")
+    if os.environ.get("FAKE_GROW"):
+        src += "\n".join("extra_%d = %d" % (i, i) for i in range(5)) + "\n"
     open(os.path.join(root, target), "w").write(src if target == "app.py" else "changed\n")
     g = ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@example.com"]
     subprocess.run(g + ["add", "-A"], check=True)
@@ -546,6 +548,28 @@ class TestRun(Repo):
         self.lp.approve("next", "owner")
         self.run_loop()
         self.assertEqual(self.lp.load()["cycle"], 2)            # resumed past the owner's approval
+
+    def test_gate_rollback_reopens_and_justification(self):
+        cfg = self.lp.config()
+        cfg["metrics"] = [{"key": "product_loc", "kind": "loc", "include": ["**/*.py"], "gated": True}]
+        _write(self.lp.config_path, cfg)
+        os.environ["FAKE_GROW"] = "1"
+        try:
+            self.assertEqual(self.run_loop(), 3)                 # builder grew code, no justification
+        finally:
+            os.environ.pop("FAKE_GROW")
+        self.assertEqual(D.parse(self.lp.decisions_path)[-1]["status"], "reopened")
+        self.assertEqual(D.closed(self.lp.decisions_path), set())
+        self.assertEqual(D.load_fixed(self.lp.fixed_path), {})
+        from improvement_loop import run as R
+        plan = I.load_plan(self.lp.path("plan.json"))
+        plan["items"][0]["justification"] = {"product_loc": "needed for the fix"}
+        _write(self.lp.path("plan.json"), plan)
+        _text(self.lp.path("BUILD.md"), "P-1 | loop/auto | abc | tests pass | A-1\n")
+        self.assertIn("product_loc: P-1: needed for the fix", R.Runner(self.lp, echo=False).justifications())
+        plan["items"][0]["labels"] = ["simplicity"]
+        _write(self.lp.path("plan.json"), plan)
+        self.assertEqual(R.Runner(self.lp, echo=False).justifications(), "")
 
     def test_stop_file_and_wrong_branch(self):
         _text(os.path.join(self.lp.dir, "STOP"), "")

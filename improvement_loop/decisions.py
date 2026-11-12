@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Set
 
 from . import findings as F
 
-STATUSES = ("rejected", "deferred", "fixed", "note")
+STATUSES = ("rejected", "deferred", "fixed", "reopened", "note")
 _LINE = re.compile(r"^- `([0-9a-f]{6,64})` \| (\w+) \| ([^|]*) \| ([^|]*) \| ([^|]*) \| (.*)$")
 HEADER = "# Decisions\n\nRejected, deferred and fixed findings, and tie-break calls. Later cycles skip these.\n\n"
 
@@ -57,6 +57,12 @@ def record(path: str, finding: Dict[str, Any], status: str, by: str, reason: str
         if new:
             fh.write(HEADER)
         fh.write(line)
+    if status == "reopened" and fixed_ledger:
+        ledger = load_fixed(fixed_ledger)
+        if ledger.pop(fp, None) is not None:
+            with open(fixed_ledger, "w", encoding="utf-8") as fh:
+                json.dump(ledger, fh, indent=2, sort_keys=True)
+                fh.write("\n")
     if status == "fixed" and fixed_ledger:
         ledger = load_fixed(fixed_ledger)
         ledger[fp] = {"id": finding["id"], "claim": finding["claim"], "evidence": finding["evidence"]}

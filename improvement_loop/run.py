@@ -170,7 +170,10 @@ class Runner:
         gd = self.git("rev-parse", "--git-common-dir")
         p = os.path.join(gd if os.path.isabs(gd) else os.path.join(self.root, gd), "info", "exclude")
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        text = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+        text = ""
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as fh:
+                text = fh.read()
         if ".improvement-loop/" not in text.split():
             with open(p, "a", encoding="utf-8") as fh:
                 fh.write("\n.improvement-loop/\n")
@@ -257,7 +260,9 @@ class Runner:
                                   f"findings with severity >= {self.policy['min_severity']}. Do NOT `loop decide` findings you "
                                   f"merely leave for later: a decision closes a finding for every later cycle, so "
                                   f"decide only on merit (rejected, or deferred for a stated reason). Every item is built unattended by one agent in one commit, so "
-                                  f"keep items small and testable. Do not edit files under: "
+                                  f"keep items small and testable. A correctness or security item that must grow a gated metric may "
+                                  f"carry \"justification\": {{\"<metric_key>\": \"<one-line reason>\"}}; nothing else may "
+                                  f"grow product code. Do not edit files under: "
                                   f"{', '.join(self.cfg.get('protected') or []) or '(none)'}.\n\n{text}", self.root)
         if not os.path.exists(pp):
             raise Parked("planner wrote no plan.json")
@@ -327,7 +332,10 @@ class Runner:
         if not base:
             raise Parked("no recorded base commit for this cycle")
         fails = []
-        if self.cli("gate", "--base", base, "--head", "HEAD")[0]:
+        jpath = self.lp.path("justify.txt")
+        with open(jpath, "w", encoding="utf-8") as fh:
+            fh.write(self.justifications())
+        if self.cli("gate", "--base", base, "--head", "HEAD", "--justify", jpath)[0]:
             fails.append("complexity gate")
         if self.cli("privacy", "--history", f"{base}..HEAD")[0]:
             fails.append("privacy")
@@ -344,11 +352,39 @@ class Runner:
                 tag = f"loop-backup-c{st['cycle']}-{int(time.time())}"
                 self.git("tag", tag)
                 self.git("reset", "--hard", base)
-                self.say(f"gate failed; cycle rolled back to {base[:12]} (backup tag {tag})")
+                for fid in self.built_findings():
+                    self.cli("decide", fid, "reopened", "--by", "integrator", "--reason", f"gate failed; see {tag}")
+                self.say(f"gate failed; cycle rolled back to {base[:12]} (backup tag {tag}); its findings reopened")
             raise Parked("gate failed: " + "; ".join(fails))
         if self.autonomy != "full":
             raise Parked("gate passed; release awaits the owner (`loop approve release --by NAME`)")
         self.approve("release", "tests, complexity, privacy, regression and protected-path checks pass")
+
+    def built_findings(self) -> List[str]:
+        """Finding ids of the items this cycle's build committed (BUILD.md rows with a commit)."""
+        out: List[str] = []
+        bp = self.lp.path("BUILD.md")
+        if os.path.exists(bp):
+            with open(bp, encoding="utf-8") as fh:
+                rows = fh.read().splitlines()
+            for line in rows:
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) == 5 and parts[3] == "tests pass":
+                    out += [x.strip() for x in parts[4].split(",") if x.strip()]
+        return out
+
+    def justifications(self) -> str:
+        """Metric justifications from plan items, accepted only for correctness/security items that were built."""
+        pp, built = self.lp.path("plan.json"), set(self.built_findings())
+        if not os.path.exists(pp):
+            return ""
+        lines = []
+        for it in I.load_plan(pp)["items"]:
+            j = it.get("justification")
+            if (isinstance(j, dict) and set(it["finding_ids"]) & built
+                    and set(it.get("labels", [])) & {"correctness", "security"}):
+                lines += [f"{k}: {it['id']}: {v}" for k, v in j.items() if str(v).strip()]
+        return "\n".join(lines) + ("\n" if lines else "")
 
     def step_audit(self, st: Dict[str, Any]) -> None:
         if not os.path.exists(self.lp.path("AUDIT.md")):
