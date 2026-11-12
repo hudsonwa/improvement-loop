@@ -77,12 +77,20 @@ class TestSchema(unittest.TestCase):
 
 class TestFingerprintRank(unittest.TestCase):
     def test_fingerprint_ignores_word_order_and_case(self):
-        a = finding(claim="The cache is never invalidated")
-        b = finding(claim="never invalidated: the CACHE", id="B-1", role="first-time-user")
+        a = finding(claim="The cache is never invalidated", sev=2, reach=4, effort=3, rc=False)
+        # TQ-1: pins the whole dedupe merge contract, not just the joined role.
+        b = finding(claim="never invalidated: the CACHE", id="B-1", role="first-time-user",
+                    sev=4, reach=2, effort=1, rc=True)
+        shared = dict(a["evidence"][0])
+        distinct = {"file": "app.py", "line": 5, "quote": "return cache"}
+        b["evidence"] = [dict(shared), distinct]  # same file, so the fingerprint is unchanged
         self.assertEqual(F.fingerprint(a), F.fingerprint(b))
         merged = F.dedupe([a, b])
         self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0]["role"], "architecture-critic+first-time-user")
+        got = {k: merged[0][k] for k in ("severity", "reach", "effort", "removes_complexity", "evidence", "role")}
+        self.assertEqual(got, {"severity": 4, "reach": 4, "effort": 1, "removes_complexity": True,
+                               "evidence": [shared, distinct],
+                               "role": "architecture-critic+first-time-user"})
 
     def test_dotfile_path_kept(self):
         a = finding(file=".github/x.yml")
