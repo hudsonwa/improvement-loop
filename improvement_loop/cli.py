@@ -132,7 +132,14 @@ def cmd_verify(a, lp: Loop) -> int:
     return 0
 
 
+def _require_step(lp: Loop, step: str) -> None:
+    st = lp.load()
+    if st["step"] != step:
+        raise LoopError(f"only allowed at the '{step}' step (now '{st['step']}')")
+
+
 def cmd_set_verdict(a, lp: Loop) -> int:
+    _require_step(lp, "verify")
     vp = lp.path("verified.json")
     fs = F.load(vp)
     hit = [f for f in fs if f["id"] == a.id]
@@ -160,6 +167,11 @@ def cmd_rank(a, lp: Loop) -> int:
     if a.file and not lp.exists:
         print(md)
         return 0
+    _require_step(lp, "rank")
+    if lp.approved(lp.load(), "ranking"):
+        raise LoopError("the ranking is already approved; it cannot be rewritten this cycle")
+    if a.file:
+        raise LoopError("--file only works outside an initialised loop")
     with open(lp.path("RANKED.md"), "w", encoding="utf-8") as fh:
         fh.write(md)
     F.save(lp.path("ranked.json"), ranked)

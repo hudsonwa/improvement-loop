@@ -172,6 +172,8 @@ class TestStateMachine(Repo):
         code, out = self.run_cli("approve", "ranking", "--by", "owner")  # not a tty, no --yes
         self.assertEqual(code, 2)
         self.assertEqual(self.run_cli("approve", "ranking", "--by", "owner", "--yes")[0], 0)
+        self.assertEqual(self.run_cli("rank")[0], 2)            # approved ranking is frozen
+        self.assertEqual(self.run_cli("set-verdict", "A-1", "false", "--by", "verifier")[0], 2)  # wrong step
         self.assertEqual(lp.advance()["step"], "plan")
         with open(lp.path("plan.json"), "w") as fh:
             json.dump({"items": [plan_item()]}, fh)
