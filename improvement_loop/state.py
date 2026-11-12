@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import subprocess
 from typing import Any, Dict, List, Optional
 
 from . import decisions as D
@@ -220,8 +221,13 @@ class Loop:
                 p = self.path(name, st)
                 if not os.path.exists(p):
                     unmet.append(f"{what} not run")
-                elif not _read_json(p).get("pass"):
-                    unmet.append(f"{what} did not pass")
+                else:
+                    v = _read_json(p)
+                    if not v.get("pass"):
+                        unmet.append(f"{what} did not pass")
+                    elif v.get("stamp") != self.stamp(st):
+                        unmet.append(f"{what} is stale or was not written by the CLI at this step for the current "
+                                     f"commit; re-run it")
         elif step == "audit":
             if not os.path.exists(self.path("AUDIT.md", st)):
                 unmet.append("missing AUDIT.md (fresh critics; see `loop prompt auditor`)")
@@ -229,6 +235,19 @@ class Loop:
         if gate and not self.approved(st, gate) and not (step == "audit" and self.approved(st, "stop")):
             unmet.append(f"owner approval '{gate}' not recorded (`loop approve {gate} --by NAME`)")
         return unmet
+
+    def stamp(self, st: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """What a gate verdict is bound to: cycle, step and the commit (+ dirty flag) it was computed on."""
+        st = st or self.load()
+        commit, dirty = None, None
+        try:
+            commit = subprocess.run(["git", "-C", self.root, "rev-parse", "HEAD"], capture_output=True,
+                                    text=True, check=True).stdout.strip()
+            dirty = bool(subprocess.run(["git", "-C", self.root, "status", "--porcelain"], capture_output=True,
+                                        text=True, check=True).stdout.strip())
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        return {"cycle": st["cycle"], "step": st["step"], "commit": commit, "dirty": dirty}
 
     def stop_reasons(self, st: Optional[Dict[str, Any]] = None) -> List[str]:
         """The stop rule: no verified finding >= stop_severity left, max cycles reached, or budget spent."""

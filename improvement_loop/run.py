@@ -254,8 +254,9 @@ class Runner:
         if not os.path.exists(pp) or I.validate_plan(I.load_plan(pp)):
             text = L.prompt_text(self.root, "planner") or ""
             self.agent("planner", f"Plan cycle {st['cycle']}: at most the top {self.policy['top_n']} ranked "
-                                  f"findings with severity >= {self.policy['min_severity']}; defer the rest with "
-                                  f"`loop decide`. Every item is built unattended by one agent in one commit, so "
+                                  f"findings with severity >= {self.policy['min_severity']}. Do NOT `loop decide` findings you "
+                                  f"merely leave for later: a decision closes a finding for every later cycle, so "
+                                  f"decide only on merit (rejected, or deferred for a stated reason). Every item is built unattended by one agent in one commit, so "
                                   f"keep items small and testable. Do not edit files under: "
                                   f"{', '.join(self.cfg.get('protected') or []) or '(none)'}.\n\n{text}", self.root)
         if not os.path.exists(pp):

@@ -229,7 +229,7 @@ def cmd_gate(a, lp: Loop) -> int:
     md = M.markdown(rows, a.base, a.head)
     print(md + f"\nGATE: {'FAIL (' + ', '.join(fails) + ')' if fails else 'PASS'}")
     if lp.exists:
-        _write_json(lp.path("gate.json"), {"pass": not fails, "fails": fails, "base": a.base, "head": a.head,
+        _write_json(lp.path("gate.json"), {"pass": not fails, "fails": fails, "base": a.base, "head": a.head, "stamp": lp.stamp(),
                                            "rows": rows})
         with open(lp.path("METRICS.md"), "w", encoding="utf-8") as fh:
             fh.write(f"# Metrics: {a.base} -> {a.head}\n\n" + md)
@@ -257,7 +257,7 @@ def cmd_privacy(a, lp: Loop) -> int:
         hits = P.scan_repo(lp.root, deny, history=a.history, skip=skip)
     for h in hits:
         print(f"{h['file']}:{h['line']}: {h['kind']}: {h['match']}")
-    verdict = {"pass": not hits, "hits": len(hits), "denylist_terms": len(deny), "history": a.history or ""}
+    verdict = {"stamp": lp.stamp() if lp.exists else None, "pass": not hits, "hits": len(hits), "denylist_terms": len(deny), "history": a.history or ""}
     print(("PRIVACY: PASS" if not hits else f"PRIVACY: FAIL ({len(hits)} hits)") +
           ("" if deny else "  (no denylist given: only generic secret/email/IP/home-path checks ran)"))
     if lp.exists and not a.text:

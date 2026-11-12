@@ -198,6 +198,9 @@ class TestStateMachine(Repo):
         lp.approve("release", "owner")
         self.assertIn("privacy scan (`loop privacy`) did not pass", " ".join(lp.guards()))
         _write(lp.path("privacy.json"), {"pass": True})
+        self.assertIn("is stale or was not written by the CLI", " ".join(lp.guards()))   # ARCH-1, GATE-1
+        _write(lp.path("gate.json"), {"pass": True, "stamp": lp.stamp()})
+        _write(lp.path("privacy.json"), {"pass": True, "stamp": lp.stamp()})
         lp.advance()
         _text(lp.path("AUDIT.md"), "ok\n")
         self.assertIn("approval 'next'", " ".join(lp.guards()))
