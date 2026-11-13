@@ -184,8 +184,13 @@ class Runner:
         rs = self.runstate()
         rs["base"].setdefault(str(st["cycle"]), self.git("rev-parse", "HEAD"))
         self.save_runstate(rs)
-        if self.cfg.get("checks"):
-            self.say("checks: " + self.cli("check")[1].strip().replace("\n", "; "))
+        if self.cfg.get("checks") and not os.path.exists(self.lp.path(os.path.join("checks", ".done"))):
+            code, out = self.cli("check")
+            self.say("checks: " + out.strip().replace("\n", "; "))
+            if code:
+                raise Parked("checks broken: " + out.strip().splitlines()[-1])
+            os.makedirs(self.lp.path("checks"), exist_ok=True)
+            open(self.lp.path(os.path.join("checks", ".done")), "w").close()
         fdir = self.lp.path("findings")
         os.makedirs(fdir, exist_ok=True)
         todo = [c for c in self.lp.critics() if not os.path.exists(os.path.join(fdir, c + ".json"))]
@@ -260,7 +265,9 @@ class Runner:
                                   f"findings with severity >= {self.policy['min_severity']}. Do NOT `loop decide` findings you "
                                   f"merely leave for later: a decision closes a finding for every later cycle, so "
                                   f"decide only on merit (rejected, or deferred for a stated reason). Every item is built unattended by one agent in one commit, so "
-                                  f"keep items small and testable. A correctness or security item that must grow a gated metric may "
+                                  f"keep items small and testable. An item that fixes a performance finding must add a `bench` metric to "
+                                  f"config `metrics` (see metrics.py) or a benchmark in `checks`, so the gate can compare base "
+                                  f"and head; name it in the item's `metric`. A correctness or security item that must grow a gated metric may "
                                   f"carry \"justification\": {{\"<metric_key>\": \"<one-line reason>\"}}; nothing else may "
                                   f"grow product code. Do not edit files under: "
                                   f"{', '.join(self.cfg.get('protected') or []) or '(none)'}.\n\n{text}", self.root)
@@ -298,6 +305,8 @@ class Runner:
             self.agent(f"build-{it['id']}", "Implement exactly this one plan item on the current branch, with a "
                        "regression test named after the finding id, then commit once with message "
                        f"\"{it['id']}: {it['title']}\". Do not run `loop decide`; the driver records it.\n\n"
+                       f"Run the tests only with: {' '.join(self.cfg.get('test_cmd') or []) or 'the project suite'} "
+                       f"(the configured, fastest full run); do not start other test runners.\n\n"
                        f"Item:\n{json.dumps(it, indent=2)}\n\nProtected (do not edit): "
                        f"{', '.join(self.cfg.get('protected') or []) or '(none)'}\n\nContext:\n{text}", self.root)
             ok, why = self.tests_pass()
@@ -337,7 +346,7 @@ class Runner:
             fh.write(self.justifications())
         if self.cli("gate", "--base", base, "--head", "HEAD", "--justify", jpath)[0]:
             fails.append("complexity gate")
-        if self.cli("privacy", "--history", f"{base}..HEAD")[0]:
+        if self.cli("privacy", "--base", base, "--history", f"{base}..HEAD")[0]:
             fails.append("privacy")
         if self.cli("regress")[0]:
             fails.append("regression check")

@@ -3,17 +3,25 @@
 A metric is a dict:
     {"key": "product_loc", "kind": "loc", "include": ["**/*.py"], "exclude": [...], "gated": true,
      "higher_is_worse": true, "target": "<= 5000", "pattern": "<regex, for kind=regex>", "file": "<for kind=lines>"}
-kinds: files (count of matching files), loc (non-blank lines), regex (matches of `pattern`), lines (lines in `file`).
+kinds: files (count of matching files), loc (non-blank lines), regex (matches of `pattern`), lines (lines in `file`),
+bench (median of `repeat` runs of `cmd`, the number captured by `parse`; worse only beyond `tolerance`, default 5%),
+surface (the set of lines `cmd` prints, e.g. CLI commands or API paths; any removed line is worse).
+bench and surface run their command in a temporary checkout of each ref (or the working tree for WORKTREE).
 
 Sources: a git ref (read with `git ls-tree` / `git cat-file`, never the working tree) or WORKTREE (tracked plus
 untracked-but-not-ignored files). Tests and docs are excluded from product metrics by default.
 """
 from __future__ import annotations
 
+import contextlib
 import fnmatch
+import os
+import shutil
+import statistics
+import tempfile
 import re
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 WORKTREE = "WORKTREE"
 NON_PRODUCT = ["tests/**", "test/**", "**/tests/**", "**/test/**", "**/test_*.py", "**/*_test.py",
@@ -36,7 +44,8 @@ DEFAULT_METRICS: List[Dict[str, Any]] = [
                                                       "**/*.test.*", "**/*.spec.*"], "gated": False,
      "higher_is_worse": False},
 ]
-KINDS = ("files", "loc", "regex", "lines")
+KINDS = ("files", "loc", "regex", "lines", "bench", "surface")
+RUN_KINDS = ("bench", "surface")
 
 
 def match(path: str, globs: List[str]) -> bool:
@@ -62,6 +71,14 @@ def validate_metric(m: Any) -> List[str]:
             errs.append(f"{m['key']}: regex metric needs 'pattern'")
     if m.get("kind") == "lines" and not m.get("file"):
         errs.append(f"{m['key']}: lines metric needs 'file'")
+    if m.get("kind") in RUN_KINDS and not (isinstance(m.get("cmd"), list) and m["cmd"]):
+        errs.append(f"{m['key']}: {m.get('kind')} metric needs 'cmd' (a list, no shell)")
+    if m.get("kind") == "bench":
+        try:
+            if re.compile(m.get("parse", "")).groups < 1:
+                errs.append(f"{m['key']}: bench 'parse' needs one capture group for the number")
+        except re.error as e:
+            errs.append(f"{m['key']}: bad parse: {e}")
     if m.get("kind") in ("files", "loc", "regex") and not m.get("include"):
         errs.append(f"{m['key']}: needs 'include' globs")
     return errs
@@ -110,7 +127,50 @@ class Source:
         return out
 
 
-def collect(source: Source, metrics: List[Dict[str, Any]]) -> Dict[str, int]:
+@contextlib.contextmanager
+def checkout(repo: str, ref: str) -> Iterator[str]:
+    """A directory holding `ref` (a temporary detached worktree), or the repo itself for WORKTREE."""
+    if ref == WORKTREE:
+        yield repo
+        return
+    tmp = tempfile.mkdtemp(prefix="improvement-loop-ref-")
+    wt = os.path.join(tmp, "wt")
+    p = subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", wt, ref], capture_output=True)
+    if p.returncode:
+        raise RuntimeError(f"cannot check out {ref}: {p.stderr.decode(errors='replace').strip()}")
+    try:
+        yield wt
+    finally:
+        subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", wt], capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def run_metric(cwd: str, m: Dict[str, Any]) -> Any:
+    """bench: median of the parsed number over `repeat` runs; surface: sorted unique output lines."""
+    limit = int(m.get("timeout", 600))
+    if m["kind"] == "surface":
+        p = subprocess.run(m["cmd"], cwd=cwd, capture_output=True, timeout=limit)
+        if p.returncode:
+            raise RuntimeError(f"{m['key']}: `{' '.join(m['cmd'])}` exit {p.returncode}")
+        return sorted({ln.strip() for ln in p.stdout.decode("utf-8", errors="replace").splitlines() if ln.strip()})
+    rx, vals = re.compile(m["parse"]), []
+    for _ in range(max(1, int(m.get("repeat", 5)))):
+        p = subprocess.run(m["cmd"], cwd=cwd, capture_output=True, timeout=limit)
+        hit = rx.search((p.stdout + p.stderr).decode("utf-8", errors="replace"))
+        if p.returncode or not hit:
+            raise RuntimeError(f"{m['key']}: `{' '.join(m['cmd'])}` exit {p.returncode}, number found: {bool(hit)}")
+        vals.append(float(hit.group(1)))
+    return statistics.median(vals)
+
+
+def collect(source: Source, metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
+    runs = [m for m in metrics if m["kind"] in RUN_KINDS]
+    metrics = [m for m in metrics if m["kind"] not in RUN_KINDS]
+    vals: Dict[str, Any] = {}
+    if runs:
+        with checkout(source.repo, source.ref) as cwd:
+            for m in runs:
+                vals[m["key"]] = run_metric(cwd, m)
     files = source.files()
     sel = {}
     need = set()
@@ -123,7 +183,6 @@ def collect(source: Source, metrics: List[Dict[str, Any]]) -> Dict[str, int]:
         if m["kind"] != "files":
             need.update(chosen)
     text = source.read(sorted(need))
-    vals = {}
     for m in metrics:
         chosen = sel[m["key"]]
         if m["kind"] == "files":
@@ -155,7 +214,17 @@ def gate(metrics: List[Dict[str, Any]], base: Dict[str, int], head: Dict[str, in
     for m in metrics:
         k, a, b = m["key"], base.get(m["key"], 0), head.get(m["key"], 0)
         hiw = m.get("higher_is_worse", True)
-        worse, better = (b > a, b < a) if hiw else (b < a, b > a)
+        note = ""
+        if m.get("kind") == "surface":
+            removed, added = sorted(set(a or []) - set(b or [])), sorted(set(b or []) - set(a or []))
+            worse, better = bool(removed), False
+            note = (" removed: " + ", ".join(removed[:8]) if removed else "") + (f" (+{len(added)} added)" if added else "")
+            a, b = len(a or []), len(b or [])
+        elif m.get("kind") == "bench":
+            tol = float(m.get("tolerance", 0.05)) * abs(a)
+            worse, better = (b > a + tol, b < a - tol) if hiw else (b < a - tol, b > a + tol)
+        else:
+            worse, better = (b > a, b < a) if hiw else (b < a, b > a)
         if not worse:
             v = "better" if better else "same"
         elif not m.get("gated"):
@@ -165,8 +234,8 @@ def gate(metrics: List[Dict[str, Any]], base: Dict[str, int], head: Dict[str, in
         else:
             v = "WORSE: FAIL"
             fails.append(k)
-        rows.append({"key": k, "gated": bool(m.get("gated")), "base": a, "head": b, "delta": b - a,
-                     "target": m.get("target", ""), "verdict": v, "justification": just.get(k, "")})
+        rows.append({"key": k, "gated": bool(m.get("gated")), "base": a, "head": b, "delta": round(b - a, 4),
+                     "target": m.get("target", ""), "verdict": v + note, "justification": just.get(k, "")})
     return rows, fails
 
 

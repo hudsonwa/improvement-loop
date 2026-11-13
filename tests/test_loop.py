@@ -403,8 +403,14 @@ class TestLenses(Repo):
         lp = Loop(self.root)
         lp.init()
         before = lp.critics()
-        self.write("ui/index.html", "<button></button>\n")      # appears mid-cycle: no new lens this cycle
-        self.assertEqual(lp.critics(), before)
+        self.write("ui/index.html", "<button></button>\n")      # before any critic ran: picked up (L-4)
+        self.assertIn("accessibility", lp.critics())
+        F.save(lp.path("findings/architecture-critic.json"), [finding()])
+        now = lp.critics()
+        self.write("ui/more.vue", "<x/>\n")                     # once critique started: frozen
+        self.write(".improvement-loop/lenses/late.md", "---\ndetect: **/*.py\n---\nx {{contract}}\n")
+        self.assertEqual(lp.critics(), now)
+        self.assertNotEqual(now, before)
         self.assertTrue(any("findings/performance.json" in u for u in lp.guards()))
 
     def test_checks_become_findings(self):
@@ -475,6 +481,71 @@ elif role.startswith("build-"):
 elif role == "auditor":
     open(os.path.join(cdir, "AUDIT.md"), "w").write("# Audit\nok\n")
 """
+
+
+class TestEvalFindings(Repo):
+    """Regression tests for the loop defects found by the first private-project evaluation (L-1..L-5)."""
+
+    def commit(self, msg="c"):
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "add", "-A")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", msg)
+
+    def test_L1_privacy_counts_only_new_hits(self):
+        git(self.root, "init", "-q")
+        self.write("net.py", "HOST = '10.1.2.3'\n")
+        self.commit()
+        base = subprocess.run(["git", "-C", self.root, "rev-parse", "HEAD"], capture_output=True,
+                              text=True).stdout.strip()
+        self.write("net.py", "# moved\nHOST = '10.1.2.3'\n")                 # an old hit, moved: not new
+        self.assertEqual(self.run_cli("privacy", "--base", base)[0], 0)
+        self.write("more.py", "OTHER = '10.9.9.9'\n")                         # a new hit
+        code, out = self.run_cli("privacy", "--base", base)
+        self.assertEqual(code, 1)
+        self.assertIn("more.py", out)
+        self.assertNotIn("net.py:", out)
+
+    def test_L2_bench_metric_with_tolerance(self):
+        import sys
+        git(self.root, "init", "-q")
+        self.write("speed.txt", "100\n")
+        self.commit()
+        m = {"key": "status_ms", "kind": "bench", "gated": True, "repeat": 3, "tolerance": 0.1, "parse": r"(\d+)",
+             "cmd": [sys.executable, "-c", "print(open('speed.txt').read())"]}
+        self.assertEqual(M.validate_metric(m), [])
+        self.assertTrue(M.validate_metric(dict(m, parse="x")))
+        base = M.collect(M.Source(self.root, "HEAD"), [m])
+        for val, verdict in (("105", "same"), ("150", "WORSE: FAIL"), ("50", "better")):
+            self.write("speed.txt", val + "\n")
+            rows, _ = M.gate([m], base, M.collect(M.Source(self.root, M.WORKTREE), [m]), {})
+            self.assertEqual(rows[0]["verdict"], verdict)
+
+    def test_L3_surface_metric_flags_removals(self):
+        import sys
+        git(self.root, "init", "-q")
+        self.write("cmds.txt", "facts\nstatus\n")
+        self.commit()
+        m = {"key": "cli", "kind": "surface", "gated": True,
+             "cmd": [sys.executable, "-c", "print(open('cmds.txt').read())"]}
+        base = M.collect(M.Source(self.root, "HEAD"), [m])
+        self.write("cmds.txt", "status\nnew\n")
+        rows, fails = M.gate([m], base, M.collect(M.Source(self.root, M.WORKTREE), [m]), {})
+        self.assertEqual(fails, ["cli"])
+        self.assertIn("removed: facts", rows[0]["verdict"])
+        _, fails = M.gate([m], base, M.collect(M.Source(self.root, M.WORKTREE), [m]), {"cli": "deprecated in 0.4"})
+        self.assertEqual(fails, [])
+
+    def test_L5_check_timeout_is_not_a_finding(self):
+        import sys
+        lp = Loop(self.root)
+        lp.init()
+        cfg = lp.config()
+        cfg.update(priority="normal",
+                   checks=[{"name": "slow", "cmd": [sys.executable, "-c", "import time; time.sleep(5)"], "timeout": 1}])
+        _write(lp.config_path, cfg)
+        code, out = self.run_cli("check")
+        self.assertEqual(code, 2)
+        self.assertIn("could not run to the end", out)
+        self.assertFalse(os.path.exists(lp.path("findings/checks.json")))
 
 
 class TestRun(Repo):

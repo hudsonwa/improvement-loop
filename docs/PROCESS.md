@@ -42,6 +42,20 @@ without a shell; each failure becomes a finding in `findings/checks.json` whose 
 coverage, audits and benchmarks reach the ranking without an opinion. **Scores**: `loop lenses --scores` writes
 `LENS-SCORES.md` (per lens: raised, accepted, false, fixed, precision). Retire lenses that keep missing.
 
+## Measured gates: performance, interface, privacy baseline
+- **Performance is measured, never assumed.** A performance finding carries `measured: <command> -> <result>` in
+  `notes`; without it the verifier caps it at `partly`, severity 2. A plan item that fixes one adds a `bench`
+  metric: `{"key": "status_ms", "kind": "bench", "cmd": [...], "parse": "(\\d+\\.?\\d*) ms", "repeat": 5,
+  "tolerance": 0.05, "gated": true}`. The gate runs it at the base and at the head (temporary checkouts) and fails
+  on a median slower beyond the tolerance.
+- **Interface breaks need a reason.** A `surface` metric runs a command that prints the public surface one item per
+  line (CLI commands, API paths, config keys): `{"key": "cli", "kind": "surface", "cmd": [...], "gated": true}`.
+  Any removed line fails the gate unless justified (with a changelog line).
+- **Privacy compares with the base.** `loop privacy --base <ref>` (what `loop run` uses) fails only on hits that
+  are new since the cycle base, so a project with reviewed, already-public hits can still release.
+- **Checks that time out or cannot start stop the run** as infrastructure failures, not findings; at background
+  priority each check gets 3x its `timeout`.
+
 ## Autonomy (`loop run`)
 `loop run` drives the cycle with any agent CLI: `"agent": {"cmd": ["claude", "-p", "--permission-mode",
 "bypassPermissions"], "timeout": 3600}` (the prompt goes on stdin, or where `{prompt_file}` appears), with

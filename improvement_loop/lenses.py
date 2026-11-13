@@ -165,13 +165,16 @@ def validate_checks(checks: Any) -> List[str]:
     return errs
 
 
-def run_checks(root: str, checks: List[Dict[str, Any]], cycle_dir: str) -> List[Dict[str, Any]]:
-    """Run each check; write checks/<name>.log; return one finding per failing check (none when all pass)."""
+def run_checks(root: str, checks: List[Dict[str, Any]], cycle_dir: str,
+               timeout_factor: float = 1.0) -> List[Dict[str, Any]]:
+    """Run each check; write checks/<name>.log; return one finding per failing check (none when all pass).
+    A check that times out or cannot start is an infrastructure failure, not a finding: its `_result` says so and
+    the caller stops (a timeout at background priority would otherwise be ranked as a minor finding)."""
     out_dir = os.path.join(cycle_dir, "checks")
     os.makedirs(out_dir, exist_ok=True)
     found = []
     for c in checks:
-        name, cmd, limit = c["name"], c["cmd"], int(c.get("timeout", 600))
+        name, cmd, limit = c["name"], c["cmd"], int(int(c.get("timeout", 600)) * timeout_factor)
         try:
             p = subprocess.run(cmd, cwd=root, capture_output=True, timeout=limit)
             code, body = str(p.returncode), (p.stdout + p.stderr).decode("utf-8", errors="replace")
@@ -184,7 +187,7 @@ def run_checks(root: str, checks: List[Dict[str, Any]], cycle_dir: str) -> List[
         with open(log, "w", encoding="utf-8") as fh:
             fh.write(head + "\n" + body)
         c["_result"] = code
-        if code == "0":
+        if code in ("0", "timeout", "not-run"):
             continue
         rel = os.path.relpath(log, root).replace(os.sep, "/")
         found.append({"id": f"CHECK-{name}", "role": f"check-{name}",

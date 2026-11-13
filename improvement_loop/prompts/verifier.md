@@ -9,6 +9,10 @@ exists:
 - `false`: wrong, or the code already handles it.
 - `not_checkable`: cannot be confirmed from the code (e.g. needs a machine you do not have).
 
+Performance claims (slower, blocks, waits, latency, memory, CPU) need a measurement: re-run the critic's
+`measured:` command from `notes` or time it yourself. Without one, the verdict is at most `partly` with severity
+at most 2; say "unmeasured" in the note.
+
 Record each with `loop set-verdict ID VERDICT --by verifier [--severity N] [--note "..."]`. Findings with
 `evidence_ok: false` usually cite the wrong line: find the right line if the claim is real and say so in the note,
 otherwise mark `false`. Then `loop advance` and `loop rank`.

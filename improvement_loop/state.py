@@ -166,7 +166,13 @@ class Loop:
         return sel
 
     def critics(self) -> List[str]:
-        return [x["lens"] for x in self.lens_selection()]
+        st = self.load()
+        fdir = self.path("findings", st)
+        if st["step"] == "critique" and not _ls(fdir, ".json"):
+            # nothing critiqued yet: pick up project lenses or config added since the cycle started
+            self._select_lenses(st)
+            self._save(st)
+        return [x["lens"] for x in self.lens_selection(st)]
 
     # -------------------------------------------------------------- guards
 

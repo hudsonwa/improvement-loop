@@ -107,6 +107,21 @@ def git_history(repo: str, rev_range: str) -> str:
     return p.stdout.decode("utf-8", errors="replace")
 
 
+def new_hits(head: List[Dict[str, str]], base: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Hits in `head` that `base` did not already have: same file, kind and (redacted) match, counted, so moved
+    lines are not new and an added copy of an old secret is."""
+    from collections import Counter
+    key = lambda h: (h["file"], h["kind"], h["match"])
+    left = Counter(key(h) for h in base)
+    out = []
+    for h in head:
+        if left[key(h)]:
+            left[key(h)] -= 1
+        else:
+            out.append(h)
+    return out
+
+
 def scan_repo(repo: str, deny, files: Optional[Iterable[str]] = None, history: Optional[str] = None,
               skip: Iterable[str] = ()) -> List[Dict[str, str]]:
     hits = []

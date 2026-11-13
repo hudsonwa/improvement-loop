@@ -255,9 +255,15 @@ def cmd_privacy(a, lp: Loop) -> int:
                 hits += P.scan_text(p, fh.read(), deny)
     else:
         hits = P.scan_repo(lp.root, deny, history=a.history, skip=skip)
+        if a.base:
+            with M.checkout(lp.root, a.base) as old:
+                before = P.scan_repo(old, deny, skip=skip)
+            print(f"baseline {a.base}: {len(before)} existing hits ignored; only new hits count")
+            hits = P.new_hits([h for h in hits if not h["file"].startswith("git-log:")], before) + \
+                [h for h in hits if h["file"].startswith("git-log:")]
     for h in hits:
         print(f"{h['file']}:{h['line']}: {h['kind']}: {h['match']}")
-    verdict = {"stamp": lp.stamp() if lp.exists else None, "pass": not hits, "hits": len(hits), "denylist_terms": len(deny), "history": a.history or ""}
+    verdict = {"base": a.base or "", "stamp": lp.stamp() if lp.exists else None, "pass": not hits, "hits": len(hits), "denylist_terms": len(deny), "history": a.history or ""}
     print(("PRIVACY: PASS" if not hits else f"PRIVACY: FAIL ({len(hits)} hits)") +
           ("" if deny else "  (no denylist given: only generic secret/email/IP/home-path checks ran)"))
     if lp.exists and not a.text:
@@ -355,15 +361,20 @@ def cmd_check(a, lp: Loop) -> int:
     if not checks:
         print("no checks configured: add {\"name\", \"cmd\": [...]} entries to `checks` in config.json")
         return 0
-    found = L.run_checks(lp.root, checks, lp.cycle_dir())
+    factor = 3.0 if (lp.config().get("priority") or "background") == "background" else 1.0
+    found = L.run_checks(lp.root, checks, lp.cycle_dir(), factor)
     for c in checks:
         print(f"{'ok  ' if c['_result'] == '0' else 'FAIL'} {c['name']} (exit {c['_result']})")
+    broken = [c["name"] for c in checks if c["_result"] in ("timeout", "not-run")]
     fp = lp.path(os.path.join("findings", "checks.json"))
     if found:
         F.save(fp, found)
         print(f"{len(found)} failing check(s) -> {_rel(fp)}")
     elif os.path.exists(fp):
         os.remove(fp)
+    if broken:
+        raise LoopError("check(s) could not run to the end (timeout or not started): " + ", ".join(broken) +
+                        "; fix the check or its `timeout` (background priority already allows 3x)")
     return 0
 
 
@@ -423,6 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--denylist", help="denylist file outside the repo (or $IMPROVEMENT_LOOP_DENYLIST)")
     p.add_argument("--history", help="also scan commits and metadata in this rev range, e.g. origin/main..HEAD")
     p.add_argument("--text", nargs="+", help="scan these files instead (e.g. text for an external reviewer)")
+    p.add_argument("--base", help="fail only on hits that are new since this git ref (e.g. the cycle base)")
     p.set_defaults(fn=cmd_privacy)
     p = sp.add_parser("issues", help="draft issues from plan.json, or file them (dry run unless --yes)")
     p.add_argument("action", choices=["draft", "file"])
