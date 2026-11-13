@@ -562,6 +562,20 @@ class TestEvalFindings(Repo):
         self.assertFalse(os.path.exists(lp.path("findings/checks.json")))
 
 
+class TestCycle2Findings(Repo):
+    def test_L8_history_ignores_removed_lines(self):
+        git(self.root, "init", "-q")
+        self.write("fix.py", "BOX = '10.0.0.5'\nok = 1\n")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "add", "-A")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base")
+        self.write("fix.py", "ok = 1\n")                                        # the cycle deletes an old hit
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "remove")
+        self.assertEqual(P.scan_text("h", P.git_history(self.root, "HEAD~1..HEAD"), []), [])
+        self.write("fix.py", "ok = 1\nNEW = '10.9.9.9'\n")                     # an added hit still counts
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "add")
+        self.assertEqual(len(P.scan_text("h", P.git_history(self.root, "HEAD~1..HEAD"), [])), 1)
+
+
 class TestRun(Repo):
     def setUp(self):
         super().setUp()
@@ -662,6 +676,17 @@ class TestRun(Repo):
             build = fh.read()
         self.assertIn("P-1 | loop/auto |", build)
         self.assertIn("P-2 | loop/auto | rolled back | merge conflict", build)
+
+    def test_L9_failing_test_output_is_kept(self):
+        import sys
+        cfg = self.lp.config()
+        cfg["test_cmd"] = [sys.executable, "-c", "import sys; print('noise\\n' * 50 + 'FAILED tests/test_x.py::test_y'); sys.exit(1)"]
+        _write(self.lp.config_path, cfg)
+        from improvement_loop import run as R
+        ok, why = R.Runner(self.lp, echo=False).tests_pass(label="probe")
+        self.assertFalse(ok)
+        self.assertIn("FAILED tests/test_x.py::test_y", why)
+        self.assertTrue(os.path.exists(self.lp.path("tests/probe.log")))
 
     def test_off_parks_at_ranking(self):
         cfg = self.lp.config()

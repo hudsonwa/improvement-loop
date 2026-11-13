@@ -163,17 +163,26 @@ class Runner:
         os.makedirs(d, exist_ok=True)
         return d
 
-    def tests_pass(self, cwd: Optional[str] = None) -> Tuple[bool, str]:
+    def tests_pass(self, cwd: Optional[str] = None, label: str = "tests") -> Tuple[bool, str]:
+        """Run test_cmd; keep the full output in cycle-N/tests/<label>.log and return the failing lines."""
         cmd = self.cfg.get("test_cmd")
         if not cmd:
             return True, "no test_cmd configured"
         try:
             p = PR.run(cmd, self.level, cwd=cwd or self.root, capture_output=True,
                        timeout=int(self.cfg.get("test_timeout", 900)))
+            out, ok = (p.stdout + p.stderr).decode("utf-8", errors="replace"), p.returncode == 0
         except subprocess.TimeoutExpired:
-            return False, "tests timed out"
-        tail = (p.stdout + p.stderr).decode("utf-8", errors="replace").strip().splitlines()[-3:]
-        return p.returncode == 0, " / ".join(tail)
+            out, ok = "tests timed out\n", False
+        tdir = self.lp.path("tests")
+        os.makedirs(tdir, exist_ok=True)
+        log = os.path.join(tdir, f"{label}.log")
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write(out)
+        lines = out.strip().splitlines()
+        bad = [ln for ln in lines if any(k in ln for k in ("FAILED", "ERROR", "FAIL ", "Error:", "timed out"))]
+        summary = " / ".join((bad[:4] or lines[-2:]))
+        return ok, f"{summary} (log: {os.path.relpath(log, self.root)})"
 
     def touched_protected(self, base: str, cwd: Optional[str] = None) -> List[str]:
         globs = list(self.cfg.get("protected") or [])
@@ -363,7 +372,7 @@ class Runner:
                 built = list(ex.map(lambda it: self.build_item(it, pre, st["cycle"]), todo))
             merged = [b for b in built if b["ok"] and self.merge_item(b)]
             if merged:
-                ok, why = self.tests_pass()
+                ok, why = self.tests_pass(label=f"wave-{wave}")
                 if not ok:
                     self.say(f"wave {wave}: merged tests fail ({why[:120]}); re-applying one item at a time")
                     self.git("reset", "--hard", pre)
@@ -371,7 +380,7 @@ class Runner:
                     for b in merged:
                         before = self.git("rev-parse", "HEAD")
                         if self.merge_item(b):
-                            ok1, why1 = self.tests_pass()
+                            ok1, why1 = self.tests_pass(label=f"wave-{wave}-{b['item']['id']}")
                             if ok1:
                                 keep.append(b)
                                 continue
@@ -424,7 +433,7 @@ class Runner:
             elif self.touched_protected(pre, wt):
                 out["why"] = "touched protected paths: " + ", ".join(self.touched_protected(pre, wt)[:5])
             else:
-                ok, why = self.tests_pass(wt)
+                ok, why = self.tests_pass(wt, f"build-{it['id']}")
                 out.update(ok=ok, why="" if ok else "tests fail: " + why[:120])
         finally:
             self.git("worktree", "remove", "--force", wt, check=False)

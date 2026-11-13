@@ -99,12 +99,15 @@ def git_files(repo: str) -> List[str]:
 
 
 def git_history(repo: str, rev_range: str) -> str:
-    """Full patch text plus commit metadata (author names/emails, messages) for a range."""
+    """What the range newly publishes: commit metadata (author names/emails, messages) and the ADDED lines of each
+    patch. Removed lines are left out: they were already published before the range, and deleting an old secret
+    must never fail the gate."""
     p = subprocess.run(["git", "-C", repo, "log", "-p", "--format=commit %H%nAuthor: %an <%ae>%nCommitter: %cn <%ce>"
                         "%n%B", rev_range], capture_output=True)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.decode(errors="replace").strip())
-    return p.stdout.decode("utf-8", errors="replace")
+    text = p.stdout.decode("utf-8", errors="replace")
+    return "\n".join(ln for ln in text.splitlines() if not ln.startswith("-"))
 
 
 def new_hits(head: List[Dict[str, str]], base: List[Dict[str, str]]) -> List[Dict[str, str]]:
