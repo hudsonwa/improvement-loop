@@ -43,8 +43,8 @@ LOOP = [sys.executable, "-m", "improvement_loop"]
 HARD_RULES = (
     "HARD RULES (from the improvement-loop driver): work only inside {cwd}. Never push, never open PRs, never "
     "file issues, never change git remotes or global config, never install system packages, never touch files "
-    "outside this directory. Put scratch work (temporary installs, homes, caches, copies) only under {scratch}, never
-    inside the project. Never edit .improvement-loop/state.json or record approvals. The loop CLI is "
+    "outside this directory. Put scratch work (temporary installs, homes, caches, copies) only under "
+    "{scratch}, never inside the project. Never edit .improvement-loop/state.json or record approvals. The loop CLI is "
     "`{loop}` (run it from {root}).\n\n")
 
 

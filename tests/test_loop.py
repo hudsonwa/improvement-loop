@@ -611,7 +611,7 @@ class TestRun(Repo):
         with open(self.lp.path("agents/architecture-critic.prompt.md")) as fh:
             text = fh.read()
         self.assertIn("Do NOT run the project's full test suite", text)
-        self.assertIn("never\n    inside the project", text)                     # L-7: scratch stays outside
+        self.assertIn("never inside the project", text)                     # L-7: scratch stays outside
         self.assertNotIn(self.root, text.split("Put scratch work")[1].split("never")[0])
 
     def test_off_parks_at_ranking(self):
