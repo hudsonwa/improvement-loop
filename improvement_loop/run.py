@@ -43,7 +43,8 @@ LOOP = [sys.executable, "-m", "improvement_loop"]
 HARD_RULES = (
     "HARD RULES (from the improvement-loop driver): work only inside {cwd}. Never push, never open PRs, never "
     "file issues, never change git remotes or global config, never install system packages, never touch files "
-    "outside this directory. Never edit .improvement-loop/state.json or record approvals. The loop CLI is "
+    "outside this directory. Put scratch work (temporary installs, homes, caches, copies) only under {scratch}, never
+    inside the project. Never edit .improvement-loop/state.json or record approvals. The loop CLI is "
     "`{loop}` (run it from {root}).\n\n")
 
 
@@ -127,14 +128,15 @@ class Runner:
         os.makedirs(adir, exist_ok=True)
         pfile = os.path.join(adir, f"{role}.prompt.md")
         with open(pfile, "w", encoding="utf-8") as fh:
-            fh.write(HARD_RULES.format(cwd=cwd, root=self.root, loop=" ".join(LOOP)) + prompt)
+            fh.write(HARD_RULES.format(cwd=cwd, root=self.root, loop=" ".join(LOOP), scratch=self.scratch(role)) + prompt)
         cmd = [c.replace("{prompt_file}", pfile).replace("{cwd}", cwd) for c in spec["cmd"]]
         stdin = None if any("{prompt_file}" in c for c in spec["cmd"]) else open(pfile, "rb")
         t0 = time.time()
         with open(os.path.join(adir, f"{role}.log"), "wb") as log:
             try:
                 code = PR.run(cmd, self.level, cwd=cwd, stdin=stdin, stdout=log, stderr=subprocess.STDOUT,
-                              timeout=timeout or int(spec.get("timeout", 3600)), env=_agent_env()).returncode
+                              timeout=timeout or int(spec.get("timeout", 3600)),
+                              env=_agent_env(self.scratch(role))).returncode
             except subprocess.TimeoutExpired:
                 code = -1
             except OSError as e:
@@ -145,6 +147,13 @@ class Runner:
         self.lp.spend(minutes=round((time.time() - t0) / 60, 2))
         self.say(f"agent {role}: exit {code} in {round(time.time() - t0)} s")
         return code
+
+    def scratch(self, role: str) -> str:
+        """A per-agent scratch directory outside the project (also its TMPDIR), so nothing an agent leaves
+        behind is scanned by the project's own tests or gates."""
+        d = os.path.join(self.wt_dir, "scratch", role)
+        os.makedirs(d, exist_ok=True)
+        return d
 
     def tests_pass(self) -> Tuple[bool, str]:
         cmd = self.cfg.get("test_cmd")
@@ -487,9 +496,12 @@ class Runner:
                 self.say("auditor next-findings.json unreadable; skipped")
 
 
-def _agent_env() -> Dict[str, str]:
-    """Agents call `python -m improvement_loop`: make this very package importable from any cwd."""
+def _agent_env(scratch: Optional[str] = None) -> Dict[str, str]:
+    """Agents call `python -m improvement_loop`: make this very package importable from any cwd; temp files go
+    to the agent's scratch directory outside the project."""
     env = dict(os.environ)
+    if scratch:
+        env.update(TMPDIR=scratch, TEMP=scratch, TMP=scratch)
     pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env["PYTHONPATH"] = os.pathsep.join(x for x in (pkg_parent, env.get("PYTHONPATH")) if x)
     return env

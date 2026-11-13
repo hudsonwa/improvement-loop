@@ -609,7 +609,10 @@ class TestRun(Repo):
         self.assertLess(took, 5.5, "checks (3 s) and the critic (3 s) should overlap")
         self.assertTrue(os.path.exists(self.lp.path("checks/.done")))
         with open(self.lp.path("agents/architecture-critic.prompt.md")) as fh:
-            self.assertIn("Do NOT run the project's full test suite", fh.read())
+            text = fh.read()
+        self.assertIn("Do NOT run the project's full test suite", text)
+        self.assertIn("never\n    inside the project", text)                     # L-7: scratch stays outside
+        self.assertNotIn(self.root, text.split("Put scratch work")[1].split("never")[0])
 
     def test_off_parks_at_ranking(self):
         cfg = self.lp.config()
