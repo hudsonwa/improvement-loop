@@ -133,7 +133,9 @@ def checkout(repo: str, ref: str) -> Iterator[str]:
     if ref == WORKTREE:
         yield repo
         return
-    tmp = tempfile.mkdtemp(prefix="improvement-loop-ref-")
+    root = os.path.join(os.path.dirname(os.path.abspath(repo)), ".improvement-loop.noindex")  # same drive; no Spotlight
+    os.makedirs(root, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix="ref-", dir=root)
     wt = os.path.join(tmp, "wt")
     p = subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", wt, ref], capture_output=True)
     if p.returncode:

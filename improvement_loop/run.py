@@ -70,7 +70,8 @@ class Runner:
         self.run_path = os.path.join(lp.dir, "run.json")
         self.log_path = os.path.join(lp.dir, "RUN.md")
         key = hashlib.sha256(self.root.encode()).hexdigest()[:10]
-        self.wt_dir = self.cfg.get("worktrees_dir") or os.path.join(tempfile.gettempdir(), "improvement-loop", key)
+        self.wt_dir = self.cfg.get("worktrees_dir") or os.path.join(os.path.dirname(self.root), ".improvement-loop.noindex", key)
+        # beside the project: same drive (fast worktrees, nothing on the system disk); .noindex: Spotlight skips it
 
     # ------------------------------------------------------------------ plumbing
 
