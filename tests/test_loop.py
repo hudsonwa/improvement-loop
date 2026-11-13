@@ -470,16 +470,24 @@ elif role == "planner":
           "scope_out": "-", "removes": "the literal", "must_not_add": "lines", "acceptance": ["a"],
           "metric": "product_loc", "tests": "t", "depends_on": [], "labels": ["correctness"],
           "estimate_hours": 1, "wave": 1}
-    json.dump({"items": [it]}, open(os.path.join(cdir, "plan.json"), "w"))
+    items = [it]
+    if os.environ.get("FAKE_PLAN"):
+        items.append(dict(it, id="P-2", title="Second", scope_in="other.py"))
+    json.dump({"items": items}, open(os.path.join(cdir, "plan.json"), "w"))
 elif role.startswith("build-"):
+    here = os.getcwd()                              # the item's own worktree
+    item = role[len("build-"):]
     target = os.environ.get("FAKE_EDIT", "app.py")
-    src = open(os.path.join(root, "app.py")).read().replace("cache = {}", "cache = dict()")
+    if item == "P-2":
+        target = "app.py" if os.environ.get("FAKE_PLAN") == "conflict" else "other.py"
+    src = open(os.path.join(here, "app.py")).read().replace("cache = {}", "cache = dict()" if item == "P-1" else "cache = {1: 1}")
     if os.environ.get("FAKE_GROW"):
         src += "\n".join("extra_%d = %d" % (i, i) for i in range(5)) + "\n"
-    open(os.path.join(root, target), "w").write(src if target == "app.py" else "changed\n")
-    g = ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    time.sleep(float(os.environ.get("FAKE_BUILD_SLEEP", "0")))
+    open(os.path.join(here, target), "w").write(src if target == "app.py" else "changed = 1\n")
+    g = ["git", "-C", here, "-c", "user.name=t", "-c", "user.email=t@example.com"]
     subprocess.run(g + ["add", "-A"], check=True)
-    subprocess.run(g + ["commit", "-qm", "P-1: Clearer cache"], check=True)
+    subprocess.run(g + ["commit", "-qm", item + ": change"], check=True)
 elif role == "auditor":
     open(os.path.join(cdir, "AUDIT.md"), "w").write("# Audit\nok\n")
 """
@@ -556,6 +564,7 @@ class TestRun(Repo):
         import sys
         git(self.root, "init", "-q")
         self.write("gate.py", "x = 1\n")
+        self.write("other.py", "changed = 0\n")
         git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "add", "-A")
         git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base")
         git(self.root, "checkout", "-qb", "loop/auto")
@@ -589,7 +598,7 @@ class TestRun(Repo):
         self.assertEqual(st["step"], "done")
         self.assertTrue(all(a["by"] == "policy:autonomy-full" for a in st["approvals"]))
         log = subprocess.run(["git", "-C", self.root, "log", "--format=%s"], capture_output=True, text=True).stdout
-        self.assertIn("P-1: Clearer cache", log)
+        self.assertIn("P-1: change", log)
         self.assertEqual(D.parse(self.lp.decisions_path)[-1]["status"], "fixed")
         self.assertNotIn("improvement-loop", subprocess.run(["git", "-C", self.root, "status", "--porcelain"],
                                                             capture_output=True, text=True).stdout)
@@ -613,6 +622,36 @@ class TestRun(Repo):
         self.assertIn("Do NOT run the project's full test suite", text)
         self.assertIn("never inside the project", text)                     # L-7: scratch stays outside
         self.assertNotIn(self.root, text.split("Put scratch work")[1].split("never")[0])
+
+    def test_wave_items_build_in_parallel_and_merge(self):
+        import time
+        os.environ.update(FAKE_PLAN="two", FAKE_BUILD_SLEEP="2")
+        try:
+            self.assertEqual(self.run_loop(), 0)
+        finally:
+            for k in ("FAKE_PLAN", "FAKE_BUILD_SLEEP"):
+                os.environ.pop(k)
+        import datetime as dt
+        with open(os.path.join(self.lp.dir, "RUN.md")) as fh:
+            ends = [dt.datetime.fromisoformat(ln.split()[1]) for ln in fh if "agent build-" in ln]
+        self.assertEqual(len(ends), 2)
+        self.assertLess(abs((ends[0] - ends[1]).total_seconds()), 1.5, "the two 2 s builds should overlap")
+        log = subprocess.run(["git", "-C", self.root, "log", "--format=%s"], capture_output=True, text=True).stdout
+        self.assertIn("P-1: change", log)
+        self.assertIn("P-2: change", log)
+        branches = subprocess.run(["git", "-C", self.root, "branch"], capture_output=True, text=True).stdout
+        self.assertNotIn("item-c1", branches)                                       # temp branches cleaned up
+
+    def test_wave_conflict_rejects_only_one_item(self):
+        os.environ["FAKE_PLAN"] = "conflict"
+        try:
+            self.assertEqual(self.run_loop(), 0)
+        finally:
+            os.environ.pop("FAKE_PLAN")
+        with open(self.lp.path("BUILD.md")) as fh:
+            build = fh.read()
+        self.assertIn("P-1 | loop/auto |", build)
+        self.assertIn("P-2 | loop/auto | rolled back | merge conflict", build)
 
     def test_off_parks_at_ranking(self):
         cfg = self.lp.config()

@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -65,6 +66,7 @@ class Runner:
         if self.autonomy not in AUTONOMY:
             raise LoopError(f"autonomy must be one of {', '.join(AUTONOMY)}")
         self.policy = dict({"top_n": 5, "min_severity": 3}, **(self.cfg.get("policy") or {}))
+        self._lock = threading.RLock()
         self.run_path = os.path.join(lp.dir, "run.json")
         self.log_path = os.path.join(lp.dir, "RUN.md")
         key = hashlib.sha256(self.root.encode()).hexdigest()[:10]
@@ -73,6 +75,10 @@ class Runner:
     # ------------------------------------------------------------------ plumbing
 
     def say(self, msg: str) -> None:
+        with self._lock:
+            self._say(msg)
+
+    def _say(self, msg: str) -> None:
         line = f"- {_now()} {msg}"
         with open(self.log_path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -144,7 +150,8 @@ class Runner:
             finally:
                 if stdin:
                     stdin.close()
-        self.lp.spend(minutes=round((time.time() - t0) / 60, 2))
+        with self._lock:  # agents run in parallel; state.json has one writer at a time
+            self.lp.spend(minutes=round((time.time() - t0) / 60, 2))
         self.say(f"agent {role}: exit {code} in {round(time.time() - t0)} s")
         return code
 
@@ -155,23 +162,23 @@ class Runner:
         os.makedirs(d, exist_ok=True)
         return d
 
-    def tests_pass(self) -> Tuple[bool, str]:
+    def tests_pass(self, cwd: Optional[str] = None) -> Tuple[bool, str]:
         cmd = self.cfg.get("test_cmd")
         if not cmd:
             return True, "no test_cmd configured"
         try:
-            p = PR.run(cmd, self.level, cwd=self.root, capture_output=True,
+            p = PR.run(cmd, self.level, cwd=cwd or self.root, capture_output=True,
                        timeout=int(self.cfg.get("test_timeout", 900)))
         except subprocess.TimeoutExpired:
             return False, "tests timed out"
         tail = (p.stdout + p.stderr).decode("utf-8", errors="replace").strip().splitlines()[-3:]
         return p.returncode == 0, " / ".join(tail)
 
-    def touched_protected(self, base: str) -> List[str]:
+    def touched_protected(self, base: str, cwd: Optional[str] = None) -> List[str]:
         globs = list(self.cfg.get("protected") or [])
         if not globs:
             return []
-        names = self.git("diff", "--name-only", f"{base}..HEAD").splitlines()
+        names = self.git("diff", "--name-only", f"{base}..HEAD", cwd=cwd).splitlines()
         return [n for n in names if M.match(n, globs)]
 
     def ensure_exclude(self) -> None:
@@ -329,6 +336,10 @@ class Runner:
             raise Parked("issue drafting failed: " + out.strip()[-300:])
 
     def step_build(self, st: Dict[str, Any]) -> None:
+        """Build the plan wave by wave. Items in one wave (which by the plan's rule touch different components)
+        are built at the same time, each by its own agent in its own worktree and branch, checked there, then
+        merged one by one; one test run checks the merged wave. If that fails, the wave is re-applied one item at
+        a time with tests after each, so one bad item cannot sink the others."""
         branch = self.git("rev-parse", "--abbrev-ref", "HEAD")
         prefix = self.cfg.get("branch_prefix") or "loop/"
         if not branch.startswith(prefix):
@@ -337,43 +348,99 @@ class Runner:
         if self.git("status", "--porcelain"):
             raise Parked("working tree not clean before build")
         items = sorted(I.load_plan(self.lp.path("plan.json"))["items"], key=lambda x: (x["wave"], x["id"]))
-        log = []
+        waves: Dict[int, List[Dict[str, Any]]] = {}
         for it in items:
+            waves.setdefault(it["wave"], []).append(it)
+        log: List[str] = []
+        for wave in sorted(waves):
             if self.stop_requested():
                 raise Parked("STOP file present")
             pre = self.git("rev-parse", "HEAD")
-            text = L.prompt_text(self.root, "integrator") or ""
-            self.agent(f"build-{it['id']}", "Implement exactly this one plan item on the current branch, with a "
-                       "regression test named after the finding id, then commit once with message "
-                       f"\"{it['id']}: {it['title']}\". Do not run `loop decide`; the driver records it.\n\n"
-                       f"Run the tests only with: {' '.join(self.cfg.get('test_cmd') or []) or 'the project suite'} "
-                       f"(the configured, fastest full run); do not start other test runners.\n\n"
-                       f"Item:\n{json.dumps(it, indent=2)}\n\nProtected (do not edit): "
-                       f"{', '.join(self.cfg.get('protected') or []) or '(none)'}\n\nContext:\n{text}", self.root)
-            ok, why = self.tests_pass()
-            head = self.git("rev-parse", "HEAD")
-            bad = self.touched_protected(pre)
-            dirty = bool(self.git("status", "--porcelain"))
-            if head == pre:
-                ok, why = False, "no commit"
-            elif bad:
-                ok, why = False, "touched protected paths: " + ", ".join(bad[:5])
-            elif dirty:
-                ok, why = False, "left uncommitted changes"
-            if ok:
-                for fid in it["finding_ids"]:
-                    self.cli("decide", fid, "fixed", "--by", "integrator", "--reason", head[:12])
-                log.append(f"{it['id']} | {branch} | {head[:12]} | tests pass | {', '.join(it['finding_ids'])}")
-                self.say(f"built {it['id']} at {head[:12]}")
-            else:
-                self.git("reset", "--hard", pre)
-                self.git("clean", "-fd")
-                for fid in it["finding_ids"]:
-                    self.cli("decide", fid, "deferred", "--by", "integrator", "--reason", f"build failed: {why}")
-                log.append(f"{it['id']} | {branch} | rolled back | {why[:120]} | -")
-                self.say(f"rolled back {it['id']}: {why[:200]}")
+            todo = waves[wave]
+            self.say(f"wave {wave}: building {', '.join(i['id'] for i in todo)} in parallel")
+            with cf.ThreadPoolExecutor(max_workers=max(1, int(self.cfg.get("max_parallel", 8)))) as ex:
+                built = list(ex.map(lambda it: self.build_item(it, pre, st["cycle"]), todo))
+            merged = [b for b in built if b["ok"] and self.merge_item(b)]
+            if merged:
+                ok, why = self.tests_pass()
+                if not ok:
+                    self.say(f"wave {wave}: merged tests fail ({why[:120]}); re-applying one item at a time")
+                    self.git("reset", "--hard", pre)
+                    keep = []
+                    for b in merged:
+                        before = self.git("rev-parse", "HEAD")
+                        if self.merge_item(b):
+                            ok1, why1 = self.tests_pass()
+                            if ok1:
+                                keep.append(b)
+                                continue
+                            self.git("reset", "--hard", before)
+                            b["why"] = "tests fail together with the rest of its wave: " + why1[:100]
+                        b["ok"] = False
+                    merged = keep
+            for b in built:
+                it = b["item"]
+                if b in merged:
+                    head = b["head_after_merge"]
+                    for fid in it["finding_ids"]:
+                        self.cli("decide", fid, "fixed", "--by", "integrator", "--reason", head[:12])
+                    log.append(f"{it['id']} | {branch} | {head[:12]} | tests pass | {', '.join(it['finding_ids'])}")
+                    self.say(f"built {it['id']} at {head[:12]}")
+                else:
+                    why = b["why"] if not b["ok"] else (b.get("why") or "not merged")
+                    for fid in it["finding_ids"]:
+                        self.cli("decide", fid, "deferred", "--by", "integrator", "--reason", f"build failed: {why}")
+                    log.append(f"{it['id']} | {branch} | rolled back | {why[:120]} | -")
+                    self.say(f"rolled back {it['id']}: {why[:200]}")
+                self.git("branch", "-D", b["branch"], check=False)
         with open(self.lp.path("BUILD.md"), "w", encoding="utf-8") as fh:
             fh.write("# Build\n\n" + "\n".join(log) + "\n")
+
+    def build_item(self, it: Dict[str, Any], pre: str, cycle: int) -> Dict[str, Any]:
+        """One agent builds one item in its own worktree on its own branch from `pre`; checked there."""
+        prefix = self.cfg.get("branch_prefix") or "loop/"
+        br = f"{prefix}item-c{cycle}-{it['id']}"
+        wt = os.path.join(self.wt_dir, f"b{cycle}-{it['id']}")
+        self.git("worktree", "remove", "--force", wt, check=False)
+        self.git("branch", "-D", br, check=False)
+        self.git("worktree", "add", "-q", "-b", br, wt, pre)
+        out: Dict[str, Any] = {"item": it, "branch": br, "pre": pre, "ok": False, "why": ""}
+        try:
+            text = L.prompt_text(self.root, "integrator") or ""
+            self.agent(f"build-{it['id']}", "Implement exactly this one plan item in this worktree, with a "
+                       "regression test named after the finding id, then commit once with message "
+                       f"\"{it['id']}: {it['title']}\". Other items are being built at the same time in other "
+                       "worktrees: stay inside this item's scope. Do not run `loop decide`; the driver records it."
+                       f"\n\nRun the tests only with: {' '.join(self.cfg.get('test_cmd') or []) or 'the project suite'}"
+                       f" (the configured, fastest full run); do not start other test runners.\n\n"
+                       f"Item:\n{json.dumps(it, indent=2)}\n\nProtected (do not edit): "
+                       f"{', '.join(self.cfg.get('protected') or []) or '(none)'}\n\nContext:\n{text}", wt)
+            head = self.git("rev-parse", "HEAD", cwd=wt)
+            if head == pre:
+                out["why"] = "no commit"
+            elif self.git("status", "--porcelain", cwd=wt):
+                out["why"] = "left uncommitted changes"
+            elif self.touched_protected(pre, wt):
+                out["why"] = "touched protected paths: " + ", ".join(self.touched_protected(pre, wt)[:5])
+            else:
+                ok, why = self.tests_pass(wt)
+                out.update(ok=ok, why="" if ok else "tests fail: " + why[:120])
+        finally:
+            self.git("worktree", "remove", "--force", wt, check=False)
+        return out
+
+    def merge_item(self, b: Dict[str, Any]) -> bool:
+        """Cherry-pick an item's commits onto the loop branch; a conflict rejects only that item."""
+        name, email = self.git("log", "-1", "--format=%an%x00%ae", b["branch"]).split("\0")
+        env = dict(os.environ, GIT_COMMITTER_NAME=name, GIT_COMMITTER_EMAIL=email)  # the builder's identity
+        p = subprocess.run(["git", "-C", self.root, "cherry-pick", "--allow-empty", f"{b['pre']}..{b['branch']}"],
+                           capture_output=True, text=True, env=env)
+        if p.returncode:
+            subprocess.run(["git", "-C", self.root, "cherry-pick", "--abort"], capture_output=True)
+            b.update(ok=False, why="merge conflict with an item built beside it")
+            return False
+        b["head_after_merge"] = self.git("rev-parse", "HEAD")
+        return True
 
     def step_gate(self, st: Dict[str, Any]) -> None:
         if self.lp.approved(st, "release"):
