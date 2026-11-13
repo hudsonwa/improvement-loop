@@ -455,6 +455,8 @@ loop = [sys.executable, "-m", "improvement_loop"]
 root = os.environ["FAKE_ROOT"]
 cyc = json.load(open(os.path.join(root, ".improvement-loop/state.json")))["cycle"]
 cdir = os.path.join(root, ".improvement-loop", "cycle-%d" % cyc)
+import time
+time.sleep(float(os.environ.get("FAKE_SLEEP", "0")) if role == "architecture-critic" else 0)
 if role == "architecture-critic":
     rel = text.split("Change no file except ")[1].split(".json")[0] + ".json"
     os.makedirs(os.path.dirname(rel), exist_ok=True)
@@ -591,6 +593,23 @@ class TestRun(Repo):
         self.assertEqual(D.parse(self.lp.decisions_path)[-1]["status"], "fixed")
         self.assertNotIn("improvement-loop", subprocess.run(["git", "-C", self.root, "status", "--porcelain"],
                                                             capture_output=True, text=True).stdout)
+
+    def test_checks_and_critics_run_concurrently(self):
+        import sys, time
+        cfg = self.lp.config()
+        cfg.update(autonomy="off", checks=[{"name": "slow", "cmd": [sys.executable, "-c", "import time; time.sleep(3)"]}])
+        _write(self.lp.config_path, cfg)
+        os.environ["FAKE_SLEEP"] = "3"
+        try:
+            t0 = time.time()
+            self.run_loop()                                     # parks at ranking
+            took = time.time() - t0
+        finally:
+            os.environ.pop("FAKE_SLEEP")
+        self.assertLess(took, 5.5, "checks (3 s) and the critic (3 s) should overlap")
+        self.assertTrue(os.path.exists(self.lp.path("checks/.done")))
+        with open(self.lp.path("agents/architecture-critic.prompt.md")) as fh:
+            self.assertIn("Do NOT run the project's full test suite", fh.read())
 
     def test_off_parks_at_ranking(self):
         cfg = self.lp.config()

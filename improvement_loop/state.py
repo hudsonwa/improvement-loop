@@ -41,7 +41,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "autonomy": "off",               # off | build | full
     "policy": {"top_n": 5, "min_severity": 3},
     "priority": "background",        # background (efficiency cores) | low | normal
-    "max_parallel": 3,
+    "max_parallel": 8,               # critics at once (they wait on the model API, not the CPU)
+    "critic_timeout": 900,           # seconds per critic; a slow lens cannot hold up the cycle
     "test_cmd": None,                # run after every built item and at the gate, e.g. ["python", "-m", "pytest"]
     "protected": [],                 # globs the driver must never change (the referee)
     "branch_prefix": "loop/",

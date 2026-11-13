@@ -118,7 +118,7 @@ class Runner:
         self.lp.approve(gate, f"policy:autonomy-{self.autonomy}", why)
         self.say(f"approved `{gate}` by policy ({why})")
 
-    def agent(self, role: str, prompt: str, cwd: str) -> int:
+    def agent(self, role: str, prompt: str, cwd: str, timeout: Optional[int] = None) -> int:
         """Start the configured agent for this role with the prompt; returns its exit code."""
         spec = dict(self.cfg.get("agent") or {}, **((self.cfg.get("agents") or {}).get(role) or {}))
         if not spec.get("cmd"):
@@ -134,7 +134,7 @@ class Runner:
         with open(os.path.join(adir, f"{role}.log"), "wb") as log:
             try:
                 code = PR.run(cmd, self.level, cwd=cwd, stdin=stdin, stdout=log, stderr=subprocess.STDOUT,
-                              timeout=int(spec.get("timeout", 3600)), env=_agent_env()).returncode
+                              timeout=timeout or int(spec.get("timeout", 3600)), env=_agent_env()).returncode
             except subprocess.TimeoutExpired:
                 code = -1
             except OSError as e:
@@ -184,21 +184,52 @@ class Runner:
         rs = self.runstate()
         rs["base"].setdefault(str(st["cycle"]), self.git("rev-parse", "HEAD"))
         self.save_runstate(rs)
-        if self.cfg.get("checks") and not os.path.exists(self.lp.path(os.path.join("checks", ".done"))):
-            code, out = self.cli("check")
-            self.say("checks: " + out.strip().replace("\n", "; "))
-            if code:
-                raise Parked("checks broken: " + out.strip().splitlines()[-1])
-            os.makedirs(self.lp.path("checks"), exist_ok=True)
-            open(self.lp.path(os.path.join("checks", ".done")), "w").close()
         fdir = self.lp.path("findings")
         os.makedirs(fdir, exist_ok=True)
         todo = [c for c in self.lp.critics() if not os.path.exists(os.path.join(fdir, c + ".json"))]
-        with cf.ThreadPoolExecutor(max_workers=max(1, int(self.cfg.get("max_parallel", 3)))) as ex:
+        done_mark = self.lp.path(os.path.join("checks", ".done"))
+        need_checks = bool(self.cfg.get("checks")) and not os.path.exists(done_mark)
+        # checks and every critic run at the same time: the agents wait on the model API, not on this machine
+        with cf.ThreadPoolExecutor(max_workers=max(1, int(self.cfg.get("max_parallel", 8))) + 1) as ex:
+            chk = ex.submit(self.run_checks_subprocess) if need_checks else None
             list(ex.map(lambda c: self.critic(c, st), todo))
+            if chk:
+                code, out = chk.result()
+                self.say("checks: " + out.strip().replace("\n", "; "))
+                if code:
+                    raise Parked("checks broken: " + (out.strip().splitlines() or ["?"])[-1])
+                os.makedirs(os.path.dirname(done_mark), exist_ok=True)
+                open(done_mark, "w").close()
         unmet = self.lp.guards()
         if unmet:
             raise Parked("critique incomplete: " + "; ".join(unmet[:4]))
+
+    def run_checks_subprocess(self) -> Tuple[int, str]:
+        """`loop check` in its own process (safe next to the critic threads; inherits background priority)."""
+        try:
+            p = PR.run([*LOOP, "--root", self.root, "check"], self.level, cwd=self.root, capture_output=True,
+                       env=_agent_env(), timeout=6 * 3600)
+        except subprocess.TimeoutExpired:
+            return 2, "checks: no result after 6 h"
+        return p.returncode, (p.stdout + p.stderr).decode("utf-8", errors="replace")
+
+    def critic_brief(self, st: Dict[str, Any]) -> str:
+        """Shared guidance for every critic: time budget, no duplicate test runs, start from what changed."""
+        mins = int(self.cfg.get("critic_timeout", 900)) // 60
+        out = (f"Time budget: finish within {mins} minutes (you are stopped after that). Do NOT run the project's "
+               f"full test suite or other long jobs: the loop's checks run it, and their logs appear in "
+               f".improvement-loop/cycle-{st['cycle']}/checks/ in {self.root} while you work. Short targeted "
+               f"commands and timings are fine.")
+        prev = self.runstate()["base"].get(str(st["cycle"] - 1))
+        if prev:
+            try:
+                stat = self.git("diff", "--stat", f"{prev}..HEAD")
+            except Parked:
+                stat = ""
+            if stat:
+                out += (f"\n\nStart from what changed since the last cycle (`git diff {prev[:12]}..HEAD`):\n"
+                        + "\n".join(stat.splitlines()[-40:]) + "\nThe rest of the project stays in scope.")
+        return out
 
     def critic(self, lens: str, st: Dict[str, Any]) -> None:
         text = L.prompt_text(self.root, lens)
@@ -217,7 +248,8 @@ class Runner:
         prompt = (f"You are the read-only critic `{lens}`, cycle {st['cycle']}. Change no file except {rel}. Write "
                   f"it, then run `{' '.join(LOOP)} validate {rel}` until it prints ok.\n\n{text}")
         try:
-            self.agent(lens, prompt, wt)
+            self.agent(lens, prompt + "\n\n" + self.critic_brief(st), wt,
+                       timeout=int(self.cfg.get("critic_timeout", 900)))
             if os.path.exists(out):
                 fs = F.load(out)
                 if not F.validate_all(fs):

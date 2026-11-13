@@ -53,6 +53,7 @@ coverage, audits and benchmarks reach the ranking without an opinion. **Scores**
   Any removed line fails the gate unless justified (with a changelog line).
 - **Privacy compares with the base.** `loop privacy --base <ref>` (what `loop run` uses) fails only on hits that
   are new since the cycle base, so a project with reviewed, already-public hits can still release.
+- **Critique is parallel:** checks and up to `max_parallel` (8) critics run at once; each critic has `critic_timeout` (900 s), reads the check logs instead of re-running the suite, and from cycle 2 starts from the diff since the last cycle.
 - **Checks that time out or cannot start stop the run** as infrastructure failures, not findings; at background
   priority each check gets 3x its `timeout`.
 
