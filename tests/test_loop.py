@@ -688,6 +688,17 @@ class TestRun(Repo):
         self.assertIn("FAILED tests/test_x.py::test_y", why)
         self.assertTrue(os.path.exists(self.lp.path("tests/probe.log")))
 
+    def test_L10_killed_test_run_parks_instead_of_failing_the_item(self):
+        import sys
+        cfg = self.lp.config()
+        cfg["test_cmd"] = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGALRM)"]
+        _write(self.lp.config_path, cfg)
+        from improvement_loop import run as R
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(R.Parked) as cm:
+                R.Runner(self.lp).tests_pass(label="probe")
+        self.assertIn("killed twice", str(cm.exception))
+
     def test_off_parks_at_ranking(self):
         cfg = self.lp.config()
         cfg["autonomy"] = "off"

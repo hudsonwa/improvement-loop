@@ -164,16 +164,26 @@ class Runner:
         return d
 
     def tests_pass(self, cwd: Optional[str] = None, label: str = "tests") -> Tuple[bool, str]:
-        """Run test_cmd; keep the full output in cycle-N/tests/<label>.log and return the failing lines."""
+        """Run test_cmd; keep the full output in cycle-N/tests/<label>.log and return the failing lines.
+        A run that is killed (timeout or signal) is not a verdict on the code: it is retried once, then the run
+        parks, because rolling back good work for a slow machine is worse than stopping."""
         cmd = self.cfg.get("test_cmd")
         if not cmd:
             return True, "no test_cmd configured"
-        try:
-            p = PR.run(cmd, self.level, cwd=cwd or self.root, capture_output=True,
-                       timeout=int(self.cfg.get("test_timeout", 900)))
-            out, ok = (p.stdout + p.stderr).decode("utf-8", errors="replace"), p.returncode == 0
-        except subprocess.TimeoutExpired:
-            out, ok = "tests timed out\n", False
+        for attempt in (1, 2):
+            try:
+                p = PR.run(cmd, self.level, cwd=cwd or self.root, capture_output=True,
+                           timeout=int(self.cfg.get("test_timeout", 900)))
+                out, ok, killed = (p.stdout + p.stderr).decode("utf-8", errors="replace"), p.returncode == 0, \
+                    p.returncode < 0 or p.returncode in (137, 142, 143)
+            except subprocess.TimeoutExpired:
+                out, ok, killed = "tests timed out\n", False, True
+            if not killed:
+                break
+            self.say(f"{label}: test run was killed (timeout or signal), attempt {attempt} of 2")
+        else:
+            raise Parked(f"{label}: the test run was killed twice (timeout or signal), so there is no verdict on "
+                         f"the code; raise `test_timeout` (and any alarm in `test_cmd`) or free the machine")
         tdir = self.lp.path("tests")
         os.makedirs(tdir, exist_ok=True)
         log = os.path.join(tdir, f"{label}.log")
