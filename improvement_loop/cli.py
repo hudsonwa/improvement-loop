@@ -37,6 +37,11 @@ def cmd_init(a, lp: Loop) -> int:
     for x in lp.lens_selection():
         print(f"  {x['lens']:22} {x['why']}")
     print("each lens is a critic: `loop prompt <lens>`; project checks: `loop check`")
+    print("recommended in .improvement-loop/config.json `metrics` (keep the defaults and add):\n"
+          "  - a `surface` metric whose cmd prints the public interface one item per line (CLI commands, API\n"
+          "    routes, config keys), so removals need a justification;\n"
+          "  - a `bench` metric for the latency or throughput that matters most to this project.\n"
+          "  See docs/PROCESS.md, Measured gates.")
     return 0
 
 

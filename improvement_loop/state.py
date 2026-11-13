@@ -29,6 +29,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mode": "full",                  # full | lite
     "max_cycles": 3,
     "stop_severity": 3,              # stop when no verified finding at or above this severity remains
+    "min_gain": 6,                   # ...or when the cycle's built fixes sum to less than this severity (0 = off)
     "lite_top_n": 3,
     "budget": {"minutes": 0, "cost": 0.0, "max_lanes": 4},   # 0 = unlimited
     "critics": None,                 # explicit critic list; overrides lens selection
@@ -256,6 +257,21 @@ class Loop:
             pass
         return {"cycle": st["cycle"], "step": st["step"], "commit": commit, "dirty": dirty}
 
+    def cycle_gain(self, st: Dict[str, Any]) -> Optional[int]:
+        """Sum of the verified severities of the findings this cycle's build fixed (BUILD.md rows that passed);
+        None before the cycle has a BUILD.md."""
+        bp, vp = self.path("BUILD.md", st), self.path("verified.json", st)
+        if not os.path.exists(bp):
+            return None
+        sev = {f["id"]: f["severity"] for f in F.load(vp)} if os.path.exists(vp) else {}
+        ids = set()
+        with open(bp, encoding="utf-8") as fh:
+            for line in fh:
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) == 5 and parts[3] == "tests pass":
+                    ids.update(x.strip() for x in parts[4].split(",") if x.strip())
+        return sum(sev.get(i, 0) for i in ids)
+
     def stop_reasons(self, st: Optional[Dict[str, Any]] = None) -> List[str]:
         """The stop rule: no verified finding >= stop_severity left, max cycles reached, or budget spent."""
         st = st or self.load()
@@ -265,6 +281,10 @@ class Loop:
             ranked, _ = F.rank(F.load(vp), D.closed(self.decisions_path))
             if not any(f["severity"] >= cfg["stop_severity"] for f in ranked):
                 out.append(f"no open verified finding with severity >= {cfg['stop_severity']}")
+        gain = self.cycle_gain(st)
+        if cfg.get("min_gain") and gain is not None and gain < cfg["min_gain"]:
+            out.append(f"this cycle's fixes add up to severity {gain} < min_gain {cfg['min_gain']} "
+                       f"(diminishing returns)")
         if st["cycle"] >= cfg["max_cycles"]:
             out.append(f"cycle {st['cycle']} of max {cfg['max_cycles']}")
         out += [f"budget spent: {b}" for b in self.budget_spent(st)]

@@ -17,8 +17,9 @@ heavy, fragile or hard to use.
   use with `loop spend`.
 - **Lite mode**: two lenses (architecture + first-time user), verify, fix the top 3, gate, ship.
 - **Full mode**: the core lenses plus every lens that applies to the project (see Lenses below).
-- **Stop** (`loop stop-check`) when no verified finding of severity >= 3 remains, OR `max_cycles` is reached, OR
-  the budget is spent. The owner decides (`loop approve stop`).
+- **Stop** (`loop stop-check`) when no verified finding of severity >= 3 remains, OR a cycle's built fixes add up
+  to less than `min_gain` (sum of verified severities, default 6: diminishing returns), OR `max_cycles` is reached,
+  OR the budget is spent. The owner decides (`loop approve stop`).
 
 ## Lenses and checks
 Every critic is a **lens**: one dimension of quality with its own prompt (`loop prompt <lens>`). `loop lenses` shows
@@ -48,6 +49,9 @@ coverage, audits and benchmarks reach the ranking without an opinion. **Scores**
   metric: `{"key": "status_ms", "kind": "bench", "cmd": [...], "parse": "(\\d+\\.?\\d*) ms", "repeat": 5,
   "tolerance": 0.05, "gated": true}`. The gate runs it at the base and at the head (temporary checkouts) and fails
   on a median slower beyond the tolerance.
+- **Removing a feature removes its data:** the planner's rule 7 and the builder brief require deleting or migrating
+  what the feature stored on existing installs, with a test, plus a deprecation line. Builders also re-read the docs
+  in the files they touch. `loop init` recommends a `surface` and a `bench` metric; the gate warns without a `surface`.
 - **Interface breaks need a reason.** A `surface` metric runs a command that prints the public surface one item per
   line (CLI commands, API paths, config keys): `{"key": "cli", "kind": "surface", "cmd": [...], "gated": true}`.
   Any removed line fails the gate unless justified (with a changelog line).

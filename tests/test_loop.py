@@ -576,6 +576,33 @@ class TestCycle2Findings(Repo):
         self.assertEqual(len(P.scan_text("h", P.git_history(self.root, "HEAD~1..HEAD"), [])), 1)
 
 
+class TestEval2Findings(Repo):
+    def test_L11_L13_prompts_carry_the_rules(self):
+        self.assertIn("Removing a feature removes what it stored too", L.prompt_text(self.root, "planner"))
+
+    def test_L12_init_recommends_surface_and_bench(self):
+        code, out = self.run_cli("init")
+        self.assertEqual(code, 0)
+        self.assertIn("`surface` metric", out)
+        self.assertIn("`bench` metric", out)
+
+    def test_L14_low_gain_stops(self):
+        lp = Loop(self.root)
+        lp.init()
+        cfg = lp.config()
+        cfg.update(max_cycles=9, min_gain=6)
+        _write(lp.config_path, cfg)
+        F.save(lp.path("verified.json"), [finding(id="A-1", sev=4, verdict="true", evidence_ok=True),
+                                          finding(id="B-1", claim="other thing", sev=5, verdict="true",
+                                                  evidence_ok=True)])
+        self.assertIsNone(lp.cycle_gain(lp.load()))
+        _text(lp.path("BUILD.md"), "# Build\n\nP-1 | b | abc | tests pass | A-1\nP-2 | b | rolled back | x | -\n")
+        self.assertEqual(lp.cycle_gain(lp.load()), 4)
+        self.assertTrue(any("min_gain" in r for r in lp.stop_reasons()))
+        _text(lp.path("BUILD.md"), "P-1 | b | abc | tests pass | A-1, B-1\n")
+        self.assertFalse(any("min_gain" in r for r in lp.stop_reasons()))
+
+
 class TestRun(Repo):
     def setUp(self):
         super().setUp()
@@ -698,6 +725,13 @@ class TestRun(Repo):
             with self.assertRaises(R.Parked) as cm:
                 R.Runner(self.lp).tests_pass(label="probe")
         self.assertIn("killed twice", str(cm.exception))
+
+    def test_L12_L13_gate_warns_and_builder_told_about_docs(self):
+        self.assertEqual(self.run_loop(), 0)
+        with open(os.path.join(self.lp.dir, "RUN.md")) as fh:
+            self.assertIn("no `surface` metric configured", fh.read())
+        with open(self.lp.path("agents/build-P-1.prompt.md")) as fh:
+            self.assertIn("re-read the docs, docstrings and comments in every file you touched", fh.read())
 
     def test_off_parks_at_ranking(self):
         cfg = self.lp.config()

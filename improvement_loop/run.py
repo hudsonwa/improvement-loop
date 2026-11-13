@@ -430,7 +430,10 @@ class Runner:
             self.agent(f"build-{it['id']}", "Implement exactly this one plan item in this worktree, with a "
                        "regression test named after the finding id, then commit once with message "
                        f"\"{it['id']}: {it['title']}\". Other items are being built at the same time in other "
-                       "worktrees: stay inside this item's scope. Do not run `loop decide`; the driver records it."
+                       "worktrees: stay inside this item's scope. Before committing, re-read the docs, docstrings and "
+                       "comments in every file you touched and make them match the new behaviour (counts, names, "
+                       "commands). If the item removes a feature, also remove or migrate what it stored on existing "
+                       "installs, with a test. Do not run `loop decide`; the driver records it."
                        f"\n\nRun the tests only with: {' '.join(self.cfg.get('test_cmd') or []) or 'the project suite'}"
                        f" (the configured, fastest full run); do not start other test runners.\n\n"
                        f"Item:\n{json.dumps(it, indent=2)}\n\nProtected (do not edit): "
@@ -469,6 +472,9 @@ class Runner:
         if not base:
             raise Parked("no recorded base commit for this cycle")
         fails = []
+        if not any(m.get("kind") == "surface" for m in (self.cfg.get("metrics") or [])):
+            self.say("WARNING: no `surface` metric configured, so interface breaks (removed commands, routes, "
+                     "config keys) are not gated; see docs/PROCESS.md, Measured gates")
         jpath = self.lp.path("justify.txt")
         with open(jpath, "w", encoding="utf-8") as fh:
             fh.write(self.justifications())
