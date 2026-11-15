@@ -718,7 +718,7 @@ class TestRun(Repo):
     def test_L10_killed_test_run_parks_instead_of_failing_the_item(self):
         import sys
         cfg = self.lp.config()
-        cfg["test_cmd"] = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGALRM)"]
+        cfg["test_cmd"] = [sys.executable, "-c", "import sys; sys.exit(137)"]
         _write(self.lp.config_path, cfg)
         from improvement_loop import run as R
         with contextlib.redirect_stdout(io.StringIO()):
