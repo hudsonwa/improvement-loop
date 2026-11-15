@@ -1,31 +1,42 @@
 ---
 name: improvement-loop
-description: Run a gated improvement cycle on a software project - independent critiques, evidence-verified ranked findings, owner approval, lean plan, issues, parallel build, privacy and complexity gates, audit. Use when the user asks to improve, review, simplify or harden a project in a repeatable way, or says "run the improvement loop".
+description: Run the improvement loop on a software project, then improve the loop itself from what it got wrong. Use when the user says "run the improvement loop", "run the improvement-loop and improve recursively", "improve this project with the loop", or asks to review, simplify, speed up or harden a project in a repeatable, gated way.
 ---
 
 # improvement-loop
 
-The `loop` CLI (`pip install git+https://github.com/hudsonwa/improvement-loop`) holds the state machine and does
-every deterministic check. You do the judgement through role prompts. Never edit `.improvement-loop/state.json`
-by hand and **never run `loop approve`: approvals belong to the owner**. When a step needs approval, stop and ask.
+The `loop` CLI (`pip install git+https://github.com/hudsonwa/improvement-loop`, or the user's own checkout) holds
+the state machine and does every deterministic check. Agents do the judgement through role prompts. Never edit
+`.improvement-loop/state.json` by hand. Never push, publish or file issues without the user's yes.
 
-## Each turn
-1. `loop status` (run `loop init [--mode lite]` first if needed). Do exactly what `unmet` lists.
-2. **critique**: run `loop check`; then for each lens in `critics` (`loop lenses` says why each runs), start an independent subagent (blind to the others) with the text of
-   `loop prompt <role>`; each writes `.improvement-loop/cycle-N/findings/<role>.json`. Use a different model for
-   `external-reviewer` when you can, and scrub what you send it with `loop privacy --text FILE`. Then
-   `loop validate` each file and `loop advance`.
-3. **verify**: `loop verify`, then a verifier subagent that wrote none of the findings follows
-   `loop prompt verifier` and calls `loop set-verdict`. `loop advance`.
-4. **rank**: `loop rank`. Show the owner the top of `RANKED.md` and STOP: ask them to approve
-   (`loop approve ranking --by NAME`) or to reject/defer items (`loop decide ID rejected --by NAME --reason ...`).
-5. **plan**: follow `loop prompt planner`; write `plan.json` + `PLAN.md`; STOP for owner approval of `plan`.
-6. **issues**: `loop issues draft`; `loop issues file --repo OWNER/NAME` is a dry run - add `--yes` only if the owner
-   asked to file.
-7. **build**: one subagent per independent issue in its own worktree; you are the integrator
-   (`loop prompt integrator`).
-8. **gate**: `loop regress`, `loop gate --base <last release>`, `loop privacy --history <range>`, an independent review
-   of the diff; STOP for owner approval of `release`. **audit**: `loop prompt auditor`, `loop stop-check`, STOP for
-   `next` or `stop`.
+## "Run the improvement loop" (on the current project)
+1. **Set up**: `loop init` in the project root if `.improvement-loop/` is missing. In
+   `.improvement-loop/config.json` set:
+   - `test_cmd`: the project's own test command (a list, no shell);
+   - `metrics`: add a `surface` metric (public CLI help, routes, config keys) and a `bench` metric for the latency
+     or throughput that matters; `loop init` prints suggestions;
+   - `agent`: e.g. `{"cmd": ["claude", "-p", "--permission-mode", "bypassPermissions"], "timeout": 3600}`;
+     use a different vendor for `agents.external-reviewer` only if the project may leave the machine;
+   - `autonomy: "full"` and `max_cycles: 2` unless the user says otherwise;
+   - `protected`: the tests and configs that act as the referee.
+2. **Run**: `loop run --detach` (background, low priority, on a `loop/` branch, never pushes). Follow progress with
+   `loop status` and `.improvement-loop/run.log`. If it parks, read why, fix the cause, and run it again.
+3. **Report**: when it stops, summarise what each cycle released, what was rolled back and why, and the stop reason.
 
-Priority for every call: correctness > security > user value > simplicity. Run long jobs in the background.
+Without an agent CLI, drive it by hand: `loop status`, then do exactly what `unmet` lists, one step per turn
+(critics as blind subagents from `loop prompt <role>`, `loop verify`, `loop rank`, plan, build, gate, audit).
+Approvals (`loop approve`) are the user's unless they set autonomy.
+
+## "...and improve recursively" (the loop improves itself)
+Do this after the project run, never instead of it. The loop improves from evidence, not from scoring itself.
+1. **Evaluate the project run** with `docs/EVALUATION.md` in the loop's repo: before/after snapshots as blind copies
+   A and B, measurements, and an independent judge that saw no git history. Private projects: local models only.
+2. **Turn what went wrong into loop findings**: every regression the judge confirmed, every false rollback, park or
+   slow step in `run.log`. Say where each escaped (critique, verify, plan, build, gate, policy).
+3. **Fix the loop** on a `loop/` branch of the loop's repo: one regression test per finding, the full suite green,
+   then `loop privacy --base origin/main --history origin/main..HEAD` with a denylist of the project's private
+   names, so nothing from the project leaks into the public loop.
+4. **Report** both results (the project's net score, the loop fixes) and ask before pushing either repo.
+
+Priority for every call: correctness > performance > security > simplicity. Measure before claiming a speed-up.
+Run long jobs in the background at low priority.

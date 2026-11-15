@@ -15,8 +15,26 @@ CLI refuses to move on without those approvals.
 pip install git+https://github.com/hudsonwa/improvement-loop
 ```
 
-Python 3.9+, standard library only. Agent skills: copy `skills/claude-code/SKILL.md` to
-`~/.claude/skills/improvement-loop/SKILL.md`, or `skills/hermes/SKILL.md` to `~/.hermes/skills/improvement-loop/SKILL.md`.
+Python 3.9+, standard library only.
+
+### Agent skill: one sentence runs everything
+Install the skill, then tell your agent **"run the improvement-loop and improve recursively"**. It runs the loop on
+the current project in the background, evaluates the result blind ([docs/EVALUATION.md](docs/EVALUATION.md)), and
+fixes the loop itself from what went wrong. It asks before pushing anything.
+
+```bash
+git clone https://github.com/hudsonwa/improvement-loop ~/improvement-loop
+ln -s ~/improvement-loop/skills/claude-code ~/.claude/skills/improvement-loop   # Claude Code
+ln -s ~/improvement-loop/skills/hermes ~/.hermes/skills/improvement-loop        # Hermes
+```
+
+Agents without skills (Codex, Cursor, ...): add this to the project's `AGENTS.md`:
+
+```markdown
+## Improvement loop
+When asked to "run the improvement loop" or "improve recursively", follow
+~/improvement-loop/skills/claude-code/SKILL.md.
+```
 
 ## Use it in 3 steps
 
