@@ -30,6 +30,9 @@ def _write_json(path: str, obj) -> None:
 # ------------------------------------------------------------------ commands
 
 
+DOCS = "https://github.com/hudsonwa/improvement-loop/blob/main/docs/PROCESS.md"
+
+
 def cmd_init(a, lp: Loop) -> int:
     st = lp.init(a.mode)
     print(f"initialised {lp.dir} (mode {a.mode}); cycle {st['cycle']}, step {st['step']}")
@@ -37,11 +40,13 @@ def cmd_init(a, lp: Loop) -> int:
     for x in lp.lens_selection():
         print(f"  {x['lens']:22} {x['why']}")
     print("each lens is a critic: `loop prompt <lens>`; project checks: `loop check`")
-    print("recommended in .improvement-loop/config.json `metrics` (keep the defaults and add):\n"
+    print("recommended in .improvement-loop/config.json `metrics` (a list replaces the defaults: copy them from\n"
+          "the docs, then add):\n"
           "  - a `surface` metric whose cmd prints the public interface one item per line (CLI commands, API\n"
           "    routes, config keys), so removals need a justification;\n"
           "  - a `bench` metric for the latency or throughput that matters most to this project.\n"
-          "  See docs/PROCESS.md, Measured gates.")
+          "  See " + DOCS + "#gates\n"
+          "next: set `test_cmd` and `protected`, then `loop run` on a loop/ branch, or `loop status` for manual mode")
     return 0
 
 
@@ -111,8 +116,10 @@ def cmd_verify(a, lp: Loop) -> int:
             if errs:
                 raise LoopError(f"findings/{n} is not schema-valid:\n  " + "\n  ".join(errs[:10]))
             allf += fs
-    if not allf:
-        raise LoopError("no findings in " + fdir)
+    if not allf:  # a clean critique is a result: an empty verified.json lets the cycle reach the stop rule
+        F.save(lp.path("verified.json"), [])
+        print(f"no findings in {_rel(fdir)}; wrote an empty verified.json (`loop stop-check` should now pass)")
+        return 0
     out = F.verify_evidence(lp.root, F.dedupe(allf))
     vp = lp.path("verified.json")
     if os.path.exists(vp):
@@ -230,7 +237,8 @@ def cmd_gate(a, lp: Loop) -> int:
         with open(a.justify, encoding="utf-8") as fh:
             just = M.read_justifications(fh.read())
     rows, fails = M.gate(ms, base, head, just)
-    fails += ["regression: " + r["id"] for r in D.regressions(lp.root, lp.fixed_path) if r["status"] == "suspect"]
+    fails += ["regression: " + r["id"] for r in D.regressions(lp.root, lp.fixed_path)
+              if r["status"] == "suspect" and r["id"] not in just]  # `ID: why the fix holds` in --justify
     md = M.markdown(rows, a.base, a.head)
     print(md + f"\nGATE: {'FAIL (' + ', '.join(fails) + ')' if fails else 'PASS'}")
     if lp.exists:
@@ -433,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sp.add_parser("gate", help="complexity gate between two git refs")
     p.add_argument("--base", required=True, help="git ref of the last release")
     p.add_argument("--head", default=M.WORKTREE, help="git ref or WORKTREE (default)")
-    p.add_argument("--justify", help="file of `metric_key: one-line reason` lines")
+    p.add_argument("--justify", help="file of `metric_key: reason` (or `FINDING-ID: why the fix holds`) lines")
     p.set_defaults(fn=cmd_gate)
     p = sp.add_parser("privacy", help="secret + denylist scan of what a push would publish")
     p.add_argument("--denylist", help="denylist file outside the repo (or $IMPROVEMENT_LOOP_DENYLIST)")

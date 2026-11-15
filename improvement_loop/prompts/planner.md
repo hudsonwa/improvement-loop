@@ -13,7 +13,7 @@ Write `.improvement-loop/cycle-N/plan.json` and a short `PLAN.md`. Every item mu
    on existing installs (with a test), and names the removed commands, routes or config keys in a deprecation
    or changelog line.
 
-Priority for every call: correctness > security > user value > simplicity. Lite mode: only the top 3 findings.
+Priority for every call: correctness > security > performance > user value > simplicity. Lite mode: only the top 3 findings.
 Findings you will not address this cycle: `loop decide ID deferred|rejected --by planner --reason "..."`.
 
 plan.json: `{"targets": {"metric_key": "target"}, "items": [{"id", "title", "finding_ids": [...], "why",

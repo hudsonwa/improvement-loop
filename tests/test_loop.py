@@ -603,6 +603,40 @@ class TestEval2Findings(Repo):
         self.assertFalse(any("min_gain" in r for r in lp.stop_reasons()))
 
 
+class TestDocsFindings(Repo):
+    """Behaviour the documentation review (2026-11-16) asked to make true."""
+
+    def test_clean_critique_finishes_verify(self):
+        self.run_cli("init")
+        lp = Loop(self.root)
+        for lens in lp.critics():
+            _text(lp.path(f"findings/{lens}.json"), '{"findings": []}')
+        code, out = self.run_cli("verify")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(F.load(lp.path("verified.json")), [])
+        self.assertEqual(self.run_cli("stop-check")[0], 0)
+
+    def test_justified_regression_passes_the_gate(self):
+        git(self.root, "init", "-q")
+        self.run_cli("init")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "add", "-A")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base")
+        lp = Loop(self.root)
+        D.record(lp.decisions_path, finding(), "fixed", "integrator", "abc123", lp.fixed_path)
+        just = self.write("just.txt", "A-1: a guard above the quoted line fixes it\n")
+        self.assertEqual(self.run_cli("gate", "--base", "HEAD")[0], 1)
+        code, out = self.run_cli("gate", "--base", "HEAD", "--justify", just)
+        self.assertEqual(code, 0, out)
+
+    def test_skill_bodies_match(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        bodies = []
+        for name in ("claude-code", "hermes"):
+            with open(os.path.join(here, "skills", name, "SKILL.md"), encoding="utf-8") as fh:
+                bodies.append(fh.read().split("\n---\n", 1)[1].strip())
+        self.assertEqual(bodies[0], bodies[1])
+
+
 class TestRun(Repo):
     def setUp(self):
         super().setUp()

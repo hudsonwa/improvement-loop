@@ -130,7 +130,7 @@ class Runner:
         """Start the configured agent for this role with the prompt; returns its exit code."""
         spec = dict(self.cfg.get("agent") or {}, **((self.cfg.get("agents") or {}).get(role) or {}))
         if not spec.get("cmd"):
-            raise Parked("no agent configured: set `agent.cmd` in config.json (see docs/PROCESS.md, Autonomy)")
+            raise Parked("no agent configured: set `agent.cmd` in config.json (see https://github.com/hudsonwa/improvement-loop/blob/main/docs/PROCESS.md#autonomy)")
         adir = self.lp.path("agents")
         os.makedirs(adir, exist_ok=True)
         pfile = os.path.join(adir, f"{role}.prompt.md")
@@ -474,7 +474,7 @@ class Runner:
         fails = []
         if not any(m.get("kind") == "surface" for m in (self.cfg.get("metrics") or [])):
             self.say("WARNING: no `surface` metric configured, so interface breaks (removed commands, routes, "
-                     "config keys) are not gated; see docs/PROCESS.md, Measured gates")
+                     "config keys) are not gated; see https://github.com/hudsonwa/improvement-loop/blob/main/docs/PROCESS.md#gates")
         jpath = self.lp.path("justify.txt")
         with open(jpath, "w", encoding="utf-8") as fh:
             fh.write(self.justifications())

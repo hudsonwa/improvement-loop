@@ -14,13 +14,26 @@ improve the loop.
 ## 1. Snapshots
 | Name | What | How |
 |---|---|---|
-| `before` | the commit the run started from | `git tag eval/before <base>` (the base of cycle 1 is in `.improvement-loop/run.json`) |
+| `before` | the commit the run started from | `git tag eval/before <base>` (`loop run` records the base of cycle 1 in `.improvement-loop/run.json`; manual runs: the commit you tagged at the start) |
 | `after` | the commit the run ended on | `git tag eval/after <head>` |
 | `cN` (optional) | the release of each cycle | one tag per cycle, to see where the returns flatten out |
 
 Check each one out into its own clean worktree. Strip `.improvement-loop/`, commit messages and branch names from
 what the judge sees. Label the two copies **A** and **B**, assigned by a coin flip, and record the mapping
 somewhere the judge cannot read it.
+
+Commands (bash), run from the project, outside the judge's view:
+```bash
+mkdir -p ../eval && for s in before after; do
+  git worktree add --detach ../eval/$s eval/$s
+  rm -rf ../eval/$s/.git ../eval/$s/.improvement-loop       # no history, no loop state
+done
+if [ $((RANDOM % 2)) = 0 ]; then a=before; b=after; else a=after; b=before; fi
+mv ../eval/$a ../eval/A && mv ../eval/$b ../eval/B
+echo "A=$a B=$b" > ../eval-mapping.txt                       # keep it outside ../eval
+git worktree prune
+```
+The judge's working directory is `../eval`: it sees only A, B and, later, `MEASURES.md`.
 
 ## 2. Measure both, the same way, on the same machine
 Measurement comes first. The judge explains the numbers; it does not stand in for them. Run each measure on A
@@ -32,7 +45,7 @@ power state and priority for both copies.
 | Correctness | the test suite: pass, fail and skip counts; and the old suite run against the new code, which catches behaviour the loop changed together with its own tests |
 | Performance | the project's benchmark or a latency harness (p50/p99), throughput, startup time, peak RSS, CPU time per request or run |
 | Resources | binary or package size, dependency count, memory at rest, background threads and processes, listeners |
-| Size / simplicity | `loop gate --base A --head B` (product LOC, files, background actors), cyclomatic complexity if you have a tool |
+| Size / simplicity | `loop gate --base eval/before --head eval/after`, run by you in the project (not by the judge), then relabel the columns A and B; cyclomatic complexity if you have a tool |
 | Security | secret scan, `loop privacy`, the ecosystem's audit (`pip-audit`, `npm audit`, `cargo audit`) |
 | Interface | public CLI/API/config surface: added, removed or changed (a diff of `--help`, exported symbols, schema) |
 | Docs | the README quick start, run literally on a clean machine or container |
