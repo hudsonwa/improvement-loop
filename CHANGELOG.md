@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-11-16)
+- `loop run` refuses to start without a git commit or without `test_cmd`, with a clear message.
+- `allow_emails`: commit identities the privacy scan accepts in commit metadata.
+- `--root` works anywhere on the command line.
+- Lite mode caps the plan at `lite_top_n` items under `loop run`.
+- Removed the unused `budget.max_lanes`; `test_timeout` and `worktrees_dir` are now in the default config.
+- `examples/`: a realistic config and one cycle's files, checked by the tests.
 - Docs rewritten for new users: what it is, requirements, an unattended quickstart, after a run, cost and time,
   safety model, configuration reference, troubleshooting, glossary, CONTRIBUTING and SECURITY.
 - `loop verify` with no findings writes an empty `verified.json` instead of failing, so a clean project can stop.

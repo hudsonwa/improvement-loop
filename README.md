@@ -24,7 +24,7 @@ and the public interface may only grow with a written reason.
 
 ## Install
 ```bash
-pipx install git+https://github.com/hudsonwa/improvement-loop@v0.2.0
+pipx install git+https://github.com/hudsonwa/improvement-loop@v0.2.1
 ```
 (`pip install` works too inside a virtualenv.) This gives you `loop` (alias `improvement-loop`, or
 `python -m improvement_loop`).
@@ -58,13 +58,13 @@ loop run --detach            # background, low priority; progress in .improvemen
 loop status                  # where it is and what it waits for
 ```
 
-1. **`test_cmd` and `protected` matter.** Without `test_cmd` builds are merged untested; without `protected` an
-   agent may edit the tests that judge it.
+1. **`test_cmd` and `protected` matter.** `loop run` refuses to start without `test_cmd`; without `protected`
+   an agent may edit the tests that judge it.
 2. **`autonomy: build`** approves the ranking and the plan for you and parks before keeping the result.
    `full` also approves that, and the next cycle. `off` (default) parks at every approval. Details:
    [PROCESS.md, Autonomy](docs/PROCESS.md#autonomy).
-3. **The privacy gate flags real email addresses** in commit metadata, so commit in the loop worktree with a
-   noreply address, or that gate fails every cycle.
+3. **The privacy gate flags real email addresses** in commit metadata: commit in the loop worktree with a
+   noreply address, or list the identity you publish on purpose in `allow_emails`.
 4. The agent line lists only the tools builders need (edit files, git, python); add your test runner.
    Read the [Safety model](docs/PROCESS.md#safety-model) before giving an agent wide permissions.
 
@@ -151,6 +151,7 @@ loop stop-check; loop approve stop --by YOU   # or: loop approve next --by YOU &
 
 ## Docs
 - [docs/PROCESS.md](docs/PROCESS.md): the steps, configuration reference, gates, files, troubleshooting, glossary.
+- [examples/](examples/): a realistic config and one cycle's files.
 - [docs/EVALUATION.md](docs/EVALUATION.md): measuring whether a run really improved a project.
 - [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [SECURITY.md](SECURITY.md).
 

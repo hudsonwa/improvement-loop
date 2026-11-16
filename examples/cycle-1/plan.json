@@ -1,0 +1,33 @@
+{
+ "targets": {
+  "product_loc": "goes down"
+ },
+ "items": [
+  {
+   "id": "P1",
+   "title": "Clear error for division by zero",
+   "finding_ids": [
+    "FTU-1"
+   ],
+   "why": "a first command crashes",
+   "scope_in": "calc.py: the div command",
+   "scope_out": "other operators",
+   "removes": "nothing",
+   "must_not_add": "new options or flags",
+   "acceptance": [
+    "`calc div 1 0` prints an error, exit 2"
+   ],
+   "metric": "product_loc",
+   "tests": "tests/test_calc.py::test_div_zero",
+   "depends_on": [],
+   "labels": [
+    "correctness"
+   ],
+   "estimate_hours": 1,
+   "wave": 1,
+   "justification": {
+    "product_loc": "two lines for the guard"
+   }
+  }
+ ]
+}

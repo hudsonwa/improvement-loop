@@ -66,6 +66,8 @@ class Runner:
         if self.autonomy not in AUTONOMY:
             raise LoopError(f"autonomy must be one of {', '.join(AUTONOMY)}")
         self.policy = dict({"top_n": 5, "min_severity": 3}, **(self.cfg.get("policy") or {}))
+        if self.cfg.get("mode") == "lite":  # lite plans fewer items
+            self.policy["top_n"] = min(self.policy["top_n"], int(self.cfg.get("lite_top_n") or 3))
         self._lock = threading.RLock()
         self.run_path = os.path.join(lp.dir, "run.json")
         self.log_path = os.path.join(lp.dir, "RUN.md")

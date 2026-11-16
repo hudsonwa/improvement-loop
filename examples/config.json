@@ -1,0 +1,21 @@
+{
+  "mode": "lite",
+  "autonomy": "build",
+  "max_cycles": 2,
+  "budget": {"minutes": 240, "cost": 0},
+  "test_cmd": ["python", "-m", "pytest", "-q"],
+  "protected": ["tests/**", ".github/**", "pyproject.toml"],
+  "allow_emails": [],
+  "agent": {"cmd": ["claude", "-p", "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash(git:*),Bash(python:*)"],
+            "timeout": 3600},
+  "agents": {
+    "external-reviewer": {"cmd": ["codex", "exec", "-"], "timeout": 1800}
+  },
+  "metrics": [
+    {"key": "product_files", "kind": "files", "include": ["**/*.py"], "exclude": ["tests/**"], "gated": true},
+    {"key": "product_loc", "kind": "loc", "include": ["**/*.py"], "exclude": ["tests/**"], "gated": true},
+    {"key": "cli", "kind": "surface", "cmd": ["python", "-m", "calc", "--help"], "gated": true},
+    {"key": "add_ms", "kind": "bench", "cmd": ["python", "bench.py"], "parse": "(\\d+\\.?\\d*) ms",
+     "repeat": 5, "tolerance": 0.05, "gated": true}
+  ]
+}

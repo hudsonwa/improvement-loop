@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from typing import List, Optional
 
@@ -274,6 +275,10 @@ def cmd_privacy(a, lp: Loop) -> int:
             print(f"baseline {a.base}: {len(before)} existing hits ignored; only new hits count")
             hits = P.new_hits([h for h in hits if not h["file"].startswith("git-log:")], before) + \
                 [h for h in hits if h["file"].startswith("git-log:")]
+    allow = {e.lower() for e in (lp.config().get("allow_emails") or [])} if lp.exists else set()
+    if allow:  # identities the owner publishes on purpose (commit author/committer), never other emails
+        hits = [h for h in hits if not (h["kind"] == "email" and h["file"].startswith("git-log:")
+                                        and h["match"].lower() in allow)]
     for h in hits:
         print(f"{h['file']}:{h['line']}: {h['kind']}: {h['match']}")
     verdict = {"base": a.base or "", "stamp": lp.stamp() if lp.exists else None, "pass": not hits, "hits": len(hits), "denylist_terms": len(deny), "history": a.history or ""}
@@ -335,6 +340,11 @@ def cmd_run(a, lp: Loop) -> int:
         print(f"loop run started in the background (pid {pid}); progress in .improvement-loop/RUN.md, "
               f"stop with `touch .improvement-loop/STOP`")
         return 0
+    if subprocess.run(["git", "-C", lp.root, "rev-parse", "--verify", "-q", "HEAD"], capture_output=True).returncode:
+        raise LoopError("`loop run` needs a git repository with at least one commit (git init; git commit)")
+    if not lp.config().get("test_cmd"):
+        raise LoopError("set `test_cmd` in .improvement-loop/config.json first: without it builds would be merged "
+                        "untested (use [\"true\"] only if the project really has no tests)")
     err = R.acquire_lock(lp)
     if err:
         raise LoopError(err)
@@ -474,8 +484,22 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _hoist_root(argv: List[str]) -> List[str]:
+    """Accept `--root DIR` anywhere (`loop status --root x`), not only before the subcommand."""
+    out, root, i = [], [], 0
+    while i < len(argv):
+        if argv[i] == "--root" and i + 1 < len(argv):
+            root, i = ["--root", argv[i + 1]], i + 2
+        elif argv[i].startswith("--root="):
+            root, i = ["--root", argv[i][7:]], i + 1
+        else:
+            out.append(argv[i])
+            i += 1
+    return root + out
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    a = build_parser().parse_args(argv)
+    a = build_parser().parse_args(_hoist_root(list(sys.argv[1:] if argv is None else argv)))
     if a.cmd == "issues" and a.action == "file" and not a.repo:
         print("loop: issues file needs --repo owner/name", file=sys.stderr)
         return 2

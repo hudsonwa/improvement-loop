@@ -628,6 +628,59 @@ class TestDocsFindings(Repo):
         code, out = self.run_cli("gate", "--base", "HEAD", "--justify", just)
         self.assertEqual(code, 0, out)
 
+    def test_run_needs_git_and_test_cmd(self):
+        self.run_cli("init")
+        code, out = self.run_cli("run")
+        self.assertEqual(code, 2)
+        self.assertIn("git repository", out)
+        git(self.root, "init", "-q")
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "i")
+        code, out = self.run_cli("run")
+        self.assertEqual(code, 2)
+        self.assertIn("test_cmd", out)
+
+    def test_root_after_subcommand(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["init", "--root", self.root])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertTrue(os.path.isdir(os.path.join(self.root, ".improvement-loop")))
+
+    def test_allow_emails_covers_commit_metadata_only(self):
+        git(self.root, "init", "-q")
+        self.run_cli("init")
+        lp = Loop(self.root)
+        cfg = lp.config()
+        cfg["allow_emails"] = ["Jane@Acme.test"]
+        _write(lp.config_path, cfg)
+        _text(os.path.join(self.root, ".git", "info", "exclude"), ".improvement-loop/\n")  # as `loop run` does
+        self.write("a.py", "x = 1\n")
+        git(self.root, "add", "a.py")
+        git(self.root, "-c", "user.name=J", "-c", "user.email=jane@acme.test", "commit", "-qm", "i")
+        git(self.root, "-c", "user.name=J", "-c", "user.email=jane@acme.test", "commit", "-q", "--allow-empty",
+            "-m", "two")
+        code, out = self.run_cli("privacy", "--history", "HEAD~1..HEAD")
+        self.assertEqual(code, 0, out)
+        self.write("b.py", "OWNER = 'jane@acme.test'\n")   # in a file it still counts
+        code, out = self.run_cli("privacy")
+        self.assertEqual(code, 1, out)
+
+    def test_lite_caps_the_plan(self):
+        self.run_cli("init", "--mode", "lite")
+        lp = Loop(self.root)
+        from improvement_loop import run as R
+        self.assertEqual(R.Runner(lp, echo=False).policy["top_n"], 3)
+
+    def test_examples_are_valid(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ex = os.path.join(here, "examples")
+        self.assertEqual(F.validate_all(F.load(os.path.join(ex, "cycle-1", "findings", "first-time-user.json"))), [])
+        from improvement_loop import issues as I
+        self.assertEqual(I.validate_plan(I.load_plan(os.path.join(ex, "cycle-1", "plan.json"))), [])
+        with open(os.path.join(ex, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        self.assertEqual([e for m in cfg["metrics"] for e in M.validate_metric(m)], [])
+
     def test_skill_bodies_match(self):
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         bodies = []

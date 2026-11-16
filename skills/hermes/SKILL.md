@@ -1,7 +1,7 @@
 ---
 name: improvement-loop
 description: "Run the improvement loop on a software project, then improve the loop itself from what it got wrong (\"run the improvement-loop and improve recursively\")."
-version: 0.2.0
+version: 0.2.1
 author: improvement-loop contributors
 license: MIT
 platforms: [linux, macos, windows]

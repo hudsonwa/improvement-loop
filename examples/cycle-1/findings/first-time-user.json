@@ -1,0 +1,6 @@
+{"findings": [
+  {"id": "FTU-1", "role": "first-time-user", "claim": "`calc div 1 0` crashes with a traceback instead of an error message",
+   "category": "correctness", "evidence": [{"file": "calc.py", "line": 12, "quote": "return a / b"}],
+   "severity": 3, "reach": 2, "effort": 1, "removes_complexity": false,
+   "fix_hint": "raise a clear error for b == 0", "notes": "measured: python -m calc div 1 0 -> ZeroDivisionError"}
+]}

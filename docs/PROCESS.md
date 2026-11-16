@@ -112,7 +112,7 @@ The CLI cannot stop an agent with wide permissions from running `git push`, read
 other services. So:
 - give the agent the fewest tools that work (the README's `--allowedTools` line), not `bypassPermissions`;
 - or run in a container, VM or separate user with no push credentials;
-- always set `test_cmd` and `protected`. Without `test_cmd`, builds are merged untested.
+- always set `protected`; `loop run` refuses to start without `test_cmd`.
 
 ## Gates
 `loop gate --base <ref>` compares the base with the head (the working tree, or `--head <ref>`).
@@ -164,7 +164,8 @@ Tag the commit you start from (`git tag loop/c1-base`) and pass it to `--base` a
 - IPv4 addresses outside documentation ranges, and home paths (`/Users/x`, `/home/x`, `C:\Users\x`);
 - every term in your denylist.
 
-`--base REF` fails only on hits that are new since REF. Commit metadata in `--history` is always checked.
+`--base REF` fails only on hits that are new since REF. Commit metadata in `--history` is always checked; list
+identities you publish on purpose in `allow_emails`.
 
 **Denylist** (keep it outside the repo; or set `denylist` / `$IMPROVEMENT_LOOP_DENYLIST`):
 ```
@@ -247,13 +248,13 @@ P2 | loop/auto | - | rolled back | PERF-1
 | `max_cycles` | 3 | stop after this many cycles |
 | `stop_severity` | 3 | stop when no verified finding at or above this is left |
 | `min_gain` | 6 | stop when a cycle's fixes sum to less (0 = off) |
-| `lite_top_n` | 3 | lite mode: findings planned per cycle (planner prompt) |
+| `lite_top_n` | 3 | lite mode: at most this many plan items per cycle |
 | `budget.minutes` / `budget.cost` | 0 / 0 | stop when spent (0 = unlimited); `loop run` records minutes only |
-| `budget.max_lanes` | 4 | unused; parallelism is `max_parallel` and the plan's waves |
 | `lenses` / `retired` / `critics` | auto / [] / null | lens selection; `critics` overrides everything |
 | `checks` | [] | see Lenses and checks |
 | `metrics` | null (defaults) | gate metrics; a list replaces the defaults |
 | `denylist` | null | path to the privacy denylist |
+| `allow_emails` | [] | commit identities you publish on purpose; skipped in commit metadata only |
 | `agent` | null | `{"cmd": [...], "timeout": 3600}` for `loop run` |
 | `agents` | {} | per-role overrides of `agent` |
 | `autonomy` | `off` | `off`, `build`, `full` |
@@ -261,7 +262,7 @@ P2 | loop/auto | - | rolled back | PERF-1
 | `priority` | `background` | `background`, `low`, `normal` |
 | `max_parallel` | 8 | critics at once |
 | `critic_timeout` | 900 | seconds per critic |
-| `test_cmd` | null | **set it**: run after each item and at the gate (list, no shell) |
+| `test_cmd` | null | **required by `loop run`**: run after each item and at the gate (list, no shell) |
 | `test_timeout` | 900 | seconds per test run; a killed run is retried once, then parks |
 | `protected` | [] | **set it**: globs agents may not change |
 | `branch_prefix` | `loop/` | the branch `loop run` builds on |
@@ -275,13 +276,14 @@ Logs: `RUN.md` (steps and park reasons), `run.log` (raw output), `cycle-N/agents
 | Message | Cause | Fix |
 |---|---|---|
 | builds only on a `loop/*` branch | started on `main` | `git worktree add ../p-loop -b loop/auto`, run there |
-| git ... failed / `--git-common-dir` | not a git repo, or no commit yet | `git init && git commit` first |
+| needs a git repository with at least one commit | not a git repo, or no commit yet | `git init && git commit` first |
+| set `test_cmd` ... first | `test_cmd` unset | set it (`["true"]` only if there really are no tests) |
 | no agent configured | `agent` unset | set `agent.cmd` |
 | critique incomplete | a lens wrote no valid file | read `cycle-N/agents/<lens>.log`; rerun `loop run` |
 | working tree not clean before build | uncommitted changes in the loop worktree | commit or stash them |
 | gate failed: product_loc ... | a gated metric grew | justify it (see Gates) or simplify the fix |
 | gate failed: regression ... | a fixed finding's quote is still in place | see Regressions of fixed findings |
-| PRIVACY: FAIL on `git-log:` | a real email in commit metadata | commit with a noreply address |
+| PRIVACY: FAIL on `git-log:` | a real email in commit metadata | commit with a noreply address, or add it to `allow_emails` |
 | test run was killed twice | `test_timeout` too short, or the machine is overloaded | raise `test_timeout` |
 | ... is stale; re-run it | `gate.json` or `privacy.json` is from another step or commit | run the gate again |
 | STOP file present | `.improvement-loop/STOP` exists | delete it, then `loop run` |

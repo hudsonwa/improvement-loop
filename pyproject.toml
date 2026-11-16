@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "improvement-loop"
-version = "0.2.0"
+version = "0.2.1"
 description = "A gated, iterative improvement cycle for any software project: critique, verify, rank, plan, build, gate, audit."
 readme = "README.md"
 license = { text = "MIT" }

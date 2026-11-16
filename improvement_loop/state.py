@@ -31,7 +31,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "stop_severity": 3,              # stop when no verified finding at or above this severity remains
     "min_gain": 6,                   # ...or when the cycle's built fixes sum to less than this severity (0 = off)
     "lite_top_n": 3,
-    "budget": {"minutes": 0, "cost": 0.0, "max_lanes": 4},   # 0 = unlimited
+    "budget": {"minutes": 0, "cost": 0.0},   # 0 = unlimited
     "critics": None,                 # explicit critic list; overrides lens selection
     "lenses": None,                  # None = core + detected lenses (see lenses.py); or an explicit list
     "retired": [],                   # lenses never to run (e.g. after `loop lenses --scores`)
@@ -49,6 +49,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "branch_prefix": "loop/",
     "notify": None,                  # e.g. ["say", "{message}"]
     "metrics": None,                 # None = metrics.DEFAULT_METRICS
+    "allow_emails": [],              # commit identities you publish on purpose; the privacy scan skips them
+    "test_timeout": 900,             # seconds per test run; a killed run is retried once, then parks
+    "worktrees_dir": None,           # None = ../.improvement-loop.noindex beside the project
     "denylist": None,                # path to a denylist file OUTSIDE the repo; or $IMPROVEMENT_LOOP_DENYLIST
 }
 
