@@ -37,6 +37,7 @@ from . import issues as I
 from . import lenses as L
 from . import metrics as M
 from . import priority as PR
+from . import privacy as P
 from .state import Loop, LoopError
 
 AUTONOMY = ("off", "build", "full")
@@ -435,7 +436,9 @@ class Runner:
                        "worktrees: stay inside this item's scope. Before committing, re-read the docs, docstrings and "
                        "comments in every file you touched and make them match the new behaviour (counts, names, "
                        "commands). If the item removes a feature, also remove or migrate what it stored on existing "
-                       "installs, with a test. Do not run `loop decide`; the driver records it."
+                       "installs, with a test. New secrets, emails, IP addresses, home paths and denylisted names fail this "
+                       "item (the gate's privacy scan runs on it); invented test fixtures carry `privacy:allow` on "
+                       "their line. Do not run `loop decide`; the driver records it."
                        f"\n\nRun the tests only with: {' '.join(self.cfg.get('test_cmd') or []) or 'the project suite'}"
                        f" (the configured, fastest full run); do not start other test runners.\n\n"
                        f"Item:\n{json.dumps(it, indent=2)}\n\nProtected (do not edit): "
@@ -447,12 +450,23 @@ class Runner:
                 out["why"] = "left uncommitted changes"
             elif self.touched_protected(pre, wt):
                 out["why"] = "touched protected paths: " + ", ".join(self.touched_protected(pre, wt)[:5])
+            elif (leaks := self.privacy_hits(wt, pre)):
+                # the gate's privacy scan, per item: one item's hit rejects that item, not the whole cycle
+                out["why"] = "privacy: " + "; ".join(leaks[:3])
             else:
                 ok, why = self.tests_pass(wt, f"build-{it['id']}")
                 out.update(ok=ok, why="" if ok else "tests fail: " + why[:120])
         finally:
             self.git("worktree", "remove", "--force", wt, check=False)
         return out
+
+    def privacy_hits(self, wt: str, pre: str) -> List[str]:
+        """What the item's commits would newly publish (same scan and denylist as the gate), as printable lines."""
+        if not hasattr(self, "_deny"):
+            path = os.environ.get("IMPROVEMENT_LOOP_DENYLIST") or self.cfg.get("denylist")
+            self._deny = P.load_denylist(path) if path and os.path.exists(path) else []
+        hits, _, _ = P.new_since(wt, pre, self._deny, history=f"{pre}..HEAD")
+        return [f"{h['file']}:{h['line']}: {h['kind']}: {h['match']}" for h in hits]
 
     def merge_item(self, b: Dict[str, Any]) -> bool:
         """Cherry-pick an item's commits onto the loop branch; a conflict rejects only that item."""
@@ -473,6 +487,14 @@ class Runner:
         base = self.runstate()["base"].get(str(st["cycle"]))
         if not base:
             raise Parked("no recorded base commit for this cycle")
+        if self.git("rev-parse", "HEAD") == base and self.built_findings():
+            # an earlier gate rolled this cycle back; resuming must re-gate the built work (the cause may be fixed
+            # now), never gate the empty base and release a cycle that changed nothing
+            tags = self.git("tag", "--list", f"loop-backup-c{st['cycle']}-*", "--sort=-refname").split()
+            if not tags:
+                raise Parked("this cycle was rolled back and no backup tag is left to re-gate")
+            self.git("reset", "--hard", tags[0])
+            self.say(f"resuming a rolled-back cycle: restored {tags[0]} to gate it again")
         fails = []
         if not any(m.get("kind") == "surface" for m in (self.cfg.get("metrics") or [])):
             self.say("WARNING: no `surface` metric configured, so interface breaks (removed commands, routes, "
@@ -488,7 +510,15 @@ class Runner:
             fails.append("regression check")
         ok, why = self.tests_pass()
         if not ok:
-            fails.append("tests: " + why[:120])
+            # one failing run must not roll back a whole cycle when the same code then passes: say it was flaky
+            # (the auditor and the owner see it in RUN.md and tests/flaky.log) instead of discarding the work
+            again, why2 = self.tests_pass(label="tests-rerun")
+            if again:
+                with open(os.path.join(self.lp.path("tests"), "flaky.log"), "a", encoding="utf-8") as fh:
+                    fh.write(why + "\n")
+                self.say(f"tests: FLAKY, failed then passed on a rerun of the same commit: {why[:160]}")
+            else:
+                fails.append("tests: " + why2[:120])
         bad = self.touched_protected(base)
         if bad:
             fails.append("protected paths changed: " + ", ".join(bad[:5]))

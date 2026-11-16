@@ -268,20 +268,21 @@ def cmd_privacy(a, lp: Loop) -> int:
             with open(p, encoding="utf-8", errors="replace") as fh:
                 hits += P.scan_text(p, fh.read(), deny)
     else:
-        hits = P.scan_repo(lp.root, deny, history=a.history, skip=skip)
         if a.base:
-            with M.checkout(lp.root, a.base) as old:
-                before = P.scan_repo(old, deny, skip=skip)
-            print(f"baseline {a.base}: {len(before)} existing hits ignored; only new hits count")
-            hits = P.new_hits([h for h in hits if not h["file"].startswith("git-log:")], before) + \
-                [h for h in hits if h["file"].startswith("git-log:")]
+            hits, n_files, n_before = P.new_since(lp.root, a.base, deny, history=a.history, skip=skip)
+            print(f"baseline {a.base}: {n_files} changed file(s) scanned, {n_before} existing hits in them ignored; "
+                  "only new hits count")
+        else:
+            hits = P.scan_repo(lp.root, deny, history=a.history, skip=skip)
     allow = {e.lower() for e in (lp.config().get("allow_emails") or [])} if lp.exists else set()
     if allow:  # identities the owner publishes on purpose (commit author/committer), never other emails
         hits = [h for h in hits if not (h["kind"] == "email" and h["file"].startswith("git-log:")
                                         and h["match"].lower() in allow)]
     for h in hits:
         print(f"{h['file']}:{h['line']}: {h['kind']}: {h['match']}")
-    verdict = {"base": a.base or "", "stamp": lp.stamp() if lp.exists else None, "pass": not hits, "hits": len(hits), "denylist_terms": len(deny), "history": a.history or ""}
+    verdict = {"base": a.base or "", "stamp": lp.stamp() if lp.exists else None, "pass": not hits, "hits": len(hits), "denylist_terms": len(deny), "history": a.history or "",
+               # where each hit is (redacted match), so a parked gate can be diagnosed without re-running the scan
+               "where": [f"{h['file']}:{h['line']}: {h['kind']}: {h['match']}" for h in hits[:50]]}
     print(("PRIVACY: PASS" if not hits else f"PRIVACY: FAIL ({len(hits)} hits)") +
           ("" if deny else "  (no denylist given: only generic secret/email/IP/home-path checks ran)"))
     if lp.exists and not a.text:

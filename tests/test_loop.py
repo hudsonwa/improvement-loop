@@ -282,6 +282,22 @@ class TestPrivacy(Repo):
         self.assertEqual(kinds, ["secret:github-token", "email", "ip-address", "home-path"])
         self.assertNotIn("a" * 20, json.dumps(P.scan_text("t", text, [])))  # secrets are redacted
 
+    def test_L15_reserved_example_domains_are_not_emails(self):
+        text = "git@git.example me@host.test a@b.invalid x@dev.localhost ok@sub.example.com real@corp-internal.com"  # privacy:allow
+        self.assertEqual([h["kind"] for h in P.scan_text("t", text, [])], ["email"])
+
+    def test_L16_history_hit_already_in_base_tree_is_not_new(self):
+        base = [{"file": "docs/a.md", "line": 3, "kind": "ip-address", "match": "10.1.2.3"}]  # privacy:allow (fixture)
+        hist = [{"file": "git-log:x..HEAD", "line": 9, "kind": "ip-address", "match": "10.1.2.3"},  # privacy:allow (fixture)
+                {"file": "git-log:x..HEAD", "line": 9, "kind": "ip-address", "match": "10.9.9.9"}]  # privacy:allow (fixture)
+        self.assertEqual([h["match"] for h in P.new_history_hits(hist, base)], ["10.9.9.9"])  # privacy:allow (fixture)
+
+    def test_L22_an_env_var_name_is_not_an_assigned_secret(self):
+        ok = 'SECRET = "MY_SERVICE_KEY"\napi_key: "MY_SERVICE_TOKEN_2"'
+        bad = 'secret = "Zx81kPq0wLm"'  # privacy:allow (invented fixture)
+        self.assertEqual(P.scan_text("t", ok, []), [])
+        self.assertEqual([h["kind"] for h in P.scan_text("t", bad, [])], ["secret:assigned-secret"])
+
     def test_denylist_never_echoed(self):
         dl = self.write("outside/deny.txt", "# comment\nProjectNightjar\nre:acme-\\d+\n")
         deny = P.load_denylist(dl)
@@ -299,6 +315,17 @@ class TestPrivacy(Repo):
         code, out = self.run_cli("privacy")
         self.assertEqual(code, 1)
         self.assertIn("PRIVACY: FAIL", out)
+
+    def test_L18_privacy_json_says_where_the_hits_are(self):
+        git(self.root, "init", "-q")
+        self.write("notes.txt", "contact boss@private-co.com\n")  # privacy:allow (fixture)
+        lp = Loop(self.root)
+        lp.init()
+        self.assertEqual(self.run_cli("privacy")[0], 1)
+        with open(lp.path("privacy.json")) as fh:
+            where = json.load(fh)["where"]
+        self.assertEqual(len(where), 1)
+        self.assertTrue(where[0].startswith("notes.txt:1: email: "))
 
 
 class TestMetrics(Repo):
@@ -488,7 +515,8 @@ elif role.startswith("build-"):
     if os.environ.get("FAKE_GROW"):
         src += "\n".join("extra_%d = %d" % (i, i) for i in range(5)) + "\n"
     time.sleep(float(os.environ.get("FAKE_BUILD_SLEEP", "0")))
-    open(os.path.join(here, target), "w").write(src if target == "app.py" else "changed = 1\n")
+    leak = "contact = 'boss@" + "private-co.com'\n" if os.environ.get("FAKE_LEAK") == item else ""
+    open(os.path.join(here, target), "w").write(src if target == "app.py" else "changed = 1\n" + leak)
     g = ["git", "-C", here, "-c", "user.name=t", "-c", "user.email=t@example.com"]
     subprocess.run(g + ["add", "-A"], check=True)
     subprocess.run(g + ["commit", "-qm", item + ": change"], check=True)
@@ -517,6 +545,29 @@ class TestEvalFindings(Repo):
         self.assertEqual(code, 1)
         self.assertIn("more.py", out)
         self.assertNotIn("net.py:", out)
+
+    def test_L19_privacy_with_base_scans_only_changed_files(self):
+        git(self.root, "init", "-q")
+        self.write("old.py", "HOST = '10.1.2.3'\n")  # privacy:allow (fixture)
+        self.write("keep.py", "x = 1\n")
+        self.commit()
+        base = subprocess.run(["git", "-C", self.root, "rev-parse", "HEAD"], capture_output=True,
+                              text=True).stdout.strip()
+        self.write("keep.py", "x = 2\n")
+        self.commit("edit")
+        self.write("new.py", "y = 1\n")                                      # untracked counts as changed
+        self.assertEqual(sorted(P.changed_files(self.root, base)), ["keep.py", "new.py"])
+        seen = []
+        real = P.scan_repo
+        def spy(repo, deny, files=None, **kw):
+            seen.append(sorted(files) if files is not None else None)
+            return real(repo, deny, files=files, **kw)
+        P.scan_repo = spy
+        try:
+            self.assertEqual(self.run_cli("privacy", "--base", base)[0], 0)
+        finally:
+            P.scan_repo = real
+        self.assertEqual(seen, [["keep.py", "new.py"], ["keep.py", "new.py"]])   # old.py is never re-scanned
 
     def test_L2_bench_metric_with_tolerance(self):
         import sys
@@ -651,17 +702,17 @@ class TestDocsFindings(Repo):
         self.run_cli("init")
         lp = Loop(self.root)
         cfg = lp.config()
-        cfg["allow_emails"] = ["Jane@Acme.test"]
+        cfg["allow_emails"] = ["Jane@Acme-corp.com"]  # privacy:allow (fixture)
         _write(lp.config_path, cfg)
         _text(os.path.join(self.root, ".git", "info", "exclude"), ".improvement-loop/\n")  # as `loop run` does
         self.write("a.py", "x = 1\n")
         git(self.root, "add", "a.py")
-        git(self.root, "-c", "user.name=J", "-c", "user.email=jane@acme.test", "commit", "-qm", "i")
-        git(self.root, "-c", "user.name=J", "-c", "user.email=jane@acme.test", "commit", "-q", "--allow-empty",
+        git(self.root, "-c", "user.name=J", "-c", "user.email=jane@acme-corp.com", "commit", "-qm", "i")  # privacy:allow (fixture)
+        git(self.root, "-c", "user.name=J", "-c", "user.email=jane@acme-corp.com", "commit", "-q", "--allow-empty",  # privacy:allow (fixture)
             "-m", "two")
         code, out = self.run_cli("privacy", "--history", "HEAD~1..HEAD")
         self.assertEqual(code, 0, out)
-        self.write("b.py", "OWNER = 'jane@acme.test'\n")   # in a file it still counts
+        self.write("b.py", "OWNER = 'jane@acme-corp.com'\n")   # in a file it still counts  # privacy:allow (fixture)
         code, out = self.run_cli("privacy")
         self.assertEqual(code, 1, out)
 
@@ -869,6 +920,58 @@ class TestRun(Repo):
         plan["items"][0]["labels"] = ["simplicity"]
         _write(self.lp.path("plan.json"), plan)
         self.assertEqual(R.Runner(self.lp, echo=False).justifications(), "")
+
+    def test_L17_resume_after_gate_rollback_regates_the_built_work(self):
+        cfg = self.lp.config()
+        cfg["metrics"] = [{"key": "product_loc", "kind": "loc", "include": ["**/*.py"], "gated": True}]
+        _write(self.lp.config_path, cfg)
+        os.environ["FAKE_GROW"] = "1"
+        try:
+            self.assertEqual(self.run_loop(), 3)                 # gate fails, cycle rolled back to its base
+        finally:
+            os.environ.pop("FAKE_GROW")
+        base = subprocess.run(["git", "-C", self.root, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        plan = I.load_plan(self.lp.path("plan.json"))
+        plan["items"][0]["justification"] = {"product_loc": "needed for the fix"}   # the owner fixes the cause
+        _write(self.lp.path("plan.json"), plan)
+        self.assertEqual(self.run_loop(), 0)
+        log = subprocess.run(["git", "-C", self.root, "log", "--format=%s", f"{base}..HEAD"],
+                             capture_output=True, text=True).stdout
+        self.assertIn("P-1: change", log)                        # released the built work, not an empty cycle
+        with open(os.path.join(self.lp.dir, "RUN.md")) as fh:
+            self.assertIn("resuming a rolled-back cycle", fh.read())
+
+    def test_L20_one_flaky_gate_test_run_does_not_roll_back_the_cycle(self):
+        import sys
+        flag = os.path.join(tempfile.mkdtemp(), "flaked")
+        code = ("import json, os, sys\n"
+                "p = os.path.join('.improvement-loop', 'state.json')\n"
+                "st = json.load(open(p)) if os.path.exists(p) else {}\n"
+                f"if st.get('step') == 'gate' and not os.path.exists({flag!r}):\n"
+                f"    open({flag!r}, 'w').close(); print('FAILED tests/test_x.py::test_port'); sys.exit(1)\n")
+        cfg = self.lp.config()
+        cfg["test_cmd"] = [sys.executable, "-c", code]
+        _write(self.lp.config_path, cfg)
+        self.assertEqual(self.run_loop(), 0)
+        self.assertTrue(os.path.exists(flag))                    # the gate's first run did fail
+        log = subprocess.run(["git", "-C", self.root, "log", "--format=%s"], capture_output=True, text=True).stdout
+        self.assertIn("P-1: change", log)                        # and the cycle was still released
+        with open(os.path.join(self.lp.dir, "RUN.md")) as fh:
+            self.assertIn("tests: FLAKY", fh.read())
+
+    def test_L21_a_privacy_hit_rejects_only_its_item(self):
+        os.environ["FAKE_PLAN"] = "two"
+        os.environ["FAKE_LEAK"] = "P-2"
+        try:
+            self.assertEqual(self.run_loop(), 0)                 # the cycle is released, not rolled back
+        finally:
+            os.environ.pop("FAKE_PLAN")
+            os.environ.pop("FAKE_LEAK")
+        log = subprocess.run(["git", "-C", self.root, "log", "--format=%s"], capture_output=True, text=True).stdout
+        self.assertIn("P-1: change", log)
+        self.assertNotIn("P-2: change", log)
+        with open(self.lp.path("BUILD.md")) as fh:
+            self.assertIn("privacy: other.py", fh.read())
 
     def test_stop_file_and_wrong_branch(self):
         _text(os.path.join(self.lp.dir, "STOP"), "")

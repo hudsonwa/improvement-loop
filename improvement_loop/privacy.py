@@ -23,11 +23,14 @@ SECRET_PATTERNS: List[Tuple[str, str]] = [
     ("google-api-key", r"\bAIza[0-9A-Za-z_-]{35}\b"),
     ("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     ("assigned-secret", r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b"
-                        r"\s*[:=]\s*['\"][^'\"\s]{8,}['\"]"),
+                        r"\s*[:=]\s*['\"](?!(?-i:[A-Z][A-Z0-9_]*)['\"])[^'\"\s]{8,}['\"]"),  # an ENV_VAR_NAME is not a value
     ("url-credentials", r"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@"),
 ]
 EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-EMAIL_OK = re.compile(r"(?i)(?:noreply|no-reply)@|@(?:example\.(?:com|org|net)|users\.noreply\.github\.com)$")
+# RFC 2606 / 6761 reserved names (example.com/org/net and the .example, .test, .invalid, .localhost TLDs) never
+# reach a real mailbox, so placeholders such as git@git.example are not hits
+EMAIL_OK = re.compile(r"(?i)(?:noreply|no-reply)@|@(?:(?:[\w-]+\.)*example\.(?:com|org|net)|users\.noreply\.github\.com"
+                      r"|(?:[\w-]+\.)*[\w-]+\.(?:example|test|invalid|localhost))$")
 IPV4 = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])")
 HOME_PATH = re.compile(r"(?:/Users/|/home/|C:\\Users\\)(?!<|\$|\{|USER|you|me\b|name\b)[A-Za-z0-9._-]+")
 ALLOW = "privacy:allow"
@@ -98,6 +101,18 @@ def git_files(repo: str) -> List[str]:
     return [f for f in p.stdout.decode().split("\0") if f]
 
 
+def changed_files(repo: str, base: str) -> List[str]:
+    """Publishable files (git_files) whose content differs from `base`: changed, added or untracked."""
+    p = subprocess.run(["git", "-C", repo, "diff", "--name-only", "-z", base], capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.decode(errors="replace").strip())
+    diff = {f for f in p.stdout.decode().split("\0") if f}
+    untracked = subprocess.run(["git", "-C", repo, "ls-files", "-o", "--exclude-standard", "-z"],
+                               capture_output=True).stdout.decode().split("\0")
+    diff |= {f for f in untracked if f}
+    return [f for f in git_files(repo) if f in diff]
+
+
 def git_history(repo: str, rev_range: str) -> str:
     """What the range newly publishes: commit metadata (author names/emails, messages) and the ADDED lines of each
     patch. Removed lines are left out: they were already published before the range, and deleting an old secret
@@ -108,6 +123,13 @@ def git_history(repo: str, rev_range: str) -> str:
         raise RuntimeError(p.stderr.decode(errors="replace").strip())
     text = p.stdout.decode("utf-8", errors="replace")
     return "\n".join(ln for ln in text.splitlines() if not ln.startswith("-"))
+
+
+def new_history_hits(history: List[Dict[str, str]], base: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """History hits (commit messages, author lines) whose kind and redacted match the base tree already publishes
+    are not new: quoting an existing placeholder in a commit message exposes nothing more."""
+    seen = {(h["kind"], h["match"]) for h in base}
+    return [h for h in history if (h["kind"], h["match"]) not in seen]
 
 
 def new_hits(head: List[Dict[str, str]], base: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -144,3 +166,17 @@ def scan_repo(repo: str, deny, files: Optional[Iterable[str]] = None, history: O
     if history:
         hits += scan_text(f"git-log:{history}", git_history(repo, history), deny)
     return hits
+
+
+def new_since(repo: str, base: str, deny, history: Optional[str] = None,
+              skip: Iterable[str] = ()) -> Tuple[List[Dict[str, str]], int, int]:
+    """Hits that `repo` (its working tree, plus `history`) adds over `base`: (new hits, files scanned, base hits
+    ignored). Only files that differ from the base can hold new hits, so both sides scan just those."""
+    from . import metrics as M
+    files = changed_files(repo, base)
+    hits = scan_repo(repo, deny, files=files, history=history, skip=skip)
+    with M.checkout(repo, base) as old:
+        before = scan_repo(old, deny, files=files, skip=skip)
+    tree = [h for h in hits if not h["file"].startswith("git-log:")]
+    log = [h for h in hits if h["file"].startswith("git-log:")]
+    return new_hits(tree, before) + new_history_hits(log, before), len(files), len(before)
